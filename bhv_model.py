@@ -3,7 +3,7 @@ import pandas as pd
 from scipy import stats
 from scipy.optimize import minimize, basinhopping
 
-import behav_analyzer as bhv
+import bhv_analysis as bhv
 
 def dv_exp(amnt, prob, w1):
     '''

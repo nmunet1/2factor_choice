@@ -12,7 +12,7 @@ def loadData():
     '''
     Reads .mat files containing single-session data into a multi-session pandas DataFrame
     '''
-    root = os.getcwd()
+    root = '../'
     folders = ['bhv_allB','bhv_ABA'] # folders containing data for different session structures
     
     data = pd.DataFrame()
