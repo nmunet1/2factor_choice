@@ -104,13 +104,15 @@ def fitSubjValues(all_data, model='dv_lin', split_sess=False, verbose=False, **k
             'dv_hyp': hyperbolic discounted value
             'dv_exp': exponential discounted value
             'prospect': prospect theory
+    split_sess: if True, fits each session individually
+    verbose: if True, displays summary of fit results
     '''
     # select last 200 free trials of each valid session, convert choices to binary (1 = left, 0 = right)
     all_data = all_data[bhv.isvalid(all_data,sets='new')].groupby('date').tail(200)
     all_data = all_data.replace({'lever': {1: 0}}).replace({'lever': {-1: 1}})
 
     groups = ['left_prob_level', 'left_amnt_level', 'right_prob_level', 'right_amnt_level']
-    levels2prob = {1.0: .7, 2.0: .4, 3.0: .1}
+    levels2prob = {1.0: 0.7, 2.0: 0.4, 3.0: 0.1}
     levels2amnt = {1.0: 0.5, 2.0: 0.3, 3.0: 0.1}
 
     # pick appropriate discounted value function according to model and initial free parameter guesses

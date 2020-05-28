@@ -45,7 +45,7 @@ def loadData():
                         sess_data.insert(sess_data.shape[1], w_name[0][:2], w_fit)
                     
                     data = pd.concat([data,sess_data],ignore_index=True) # join session data with master dataset
-                        
+                    
     return data
 
 def isvalid(data, forced=False, sets='new'):
@@ -90,12 +90,23 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
     win_size:   (int) rolling window size, in trials
     min_trials: (int) minimum number of trials to include in rolling average
     '''
-    block = block[isvalid(block,sets='all')]
-    if output == 'perf':
-        ts = (block['left_fit_value'] > block['right_fit_value']).replace({True: -1.0, False: 1.0})
-        ts = (ts == block['lever']).replace({True:1, False:0})
+    block = block[isvalid(block, sets='all')]
+    if output in ['perf','model']:
+        left_amnt = block['left_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
+        left_prob = block['left_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
+        right_amnt = block['right_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
+        right_prob = block['right_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
+
+        ts = (left_amnt*left_prob > right_amnt*right_prob).replace({True: -1.0, False: 1.0})
+
+        if output == 'perf':
+            ts = (ts == block['lever']).replace({True:1, False:0})
+        else:
+            ts = (ts == block['choice']).replace({True:1, False:0})
+
     elif output == 'rt':
         ts = block['rt']
+
     else:
         raise ValueError
     
@@ -221,84 +232,123 @@ def subdivide(conf_mat, by):
 
     return groups, labels
 
-def plotSession(data, date, win_step=5, plotRT=False, **kwargs):
+def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
     '''
     Plots rolling average of performance over time for a given session
 
-    data:     (DataFrame) master experimental dataset
-    date:     (string) session date, in the form 'YYYY-MM-DD'
-    win_step: (int) sliding window step size, in trials
-    plotRT:   (Boolean) if True, superimposes reaction time over performance
+    data:       (DataFrame) master experimental dataset
+    date:       (string) session date, in the form 'YYYY-MM-DD'
+    series1:    (string) primary timeseries from data
+    series2:    (string) secondary timeseries from data
+    win_step:   (int) sliding window step size, in trials
+    plotRT:     (Boolean) if True, superimposes reaction time over performance
     '''
     sess = data[data['date']==date] # select data specific to session date
     cscheme = ['blue','crimson'] # custom color scheme
     
     fig, ax1 = plt.subplots(figsize=(12,5))
-    if plotRT:
-        ax2 = ax1.twinx() # add 2nd axis for reaction time, if applicable
+    ax2 = None
+
+    # series 1 plot settings
+    if series1 == 'perf':
+        ylabel1 = 'P(high > low)'
+        ylim1 = [.4, 1.01]
+        colors1 = ['blue', 'crimson']
+    elif series1 == 'model':
+        ylabel1 = 'P(high > low'
+        ylim1 = [.4, 1.01]
+        colors1 = ['red', 'red']
+    elif series1 == 'rt':
+        ylabel1 = 'Reaction Time (ms)'
+        ylim1 = [500, 1000]
+        colors1 = ['g', 'g']
+    else:
+        raise ValueError
+
+    # series2 plot settings
+    if not series2 is None:
+        if series2 == 'perf':
+            if series1 == 'rt':
+                ax2 = ax1.twinx() # add 2nd axis
+                ylabel2 = 'P(high > low)'
+                ylim2 = [.4, 1.01]
+            colors2 = 'grey'
+        elif series2 == 'model':
+            if series1 == 'rt':
+                ax2 = ax1.twinx()
+                ylabel2 = 'P(high > low'
+                ylim2 = [.4, 1.01]
+            colors2 = 'red'
+        elif series2 == 'rt':
+            ax2 = ax1.twinx()
+            ylabel2 = 'Reaction Time (ms)'
+            ylim2 = [500, 1000]
+            colors2 = 'g'
+        else:
+            raise ValueError
     
     # chance and criterion performance lines
     ax1.axhline(.5,color='k',lw=.75)
     ax1.axhline(.8,color='k',lw=.75)
     
     # if session has an ABA structure, subdivide into A and B blocks
-    if sess['sesstype'].iloc[0] == 'ABA':
+    if sess['sesstype'].iloc[0] == 'ABA' and sess['block'].iloc[0] == 1:
         last_trial = 0
         for ii, block_set in enumerate([[1,2],[3,4],[5]]):
             block = sess[sess['block'].isin(block_set)] # combine adjacent same-condition mini-blocks
             if block.shape[0] > 0:
-                # calculate rolling averages
-                perf = rollingAvg(block, output='perf', **kwargs)
-                rt = rollingAvg(block, output='rt')
+                data1 = rollingAvg(block, output=series1, **kwargs) # calculate rolling average
 
                 # align samples to trial numbers
-                trials = np.arange(perf.shape[0])+1+last_trial
+                trials = np.arange(data1.shape[0])+1+last_trial
                 last_trial = trials[-1]
 
                 # downsample rolling average to sliding window step size
-                perf = perf[win_step-1::win_step]
-                rt = rt[win_step-1::win_step]
+                data1 = data1[win_step-1::win_step]
                 trials = trials[win_step-1::win_step]
 
-                # add dividing boundaries between blocks
                 if ii < 2:
-                    ax1.axvline(last_trial+1,color='grey',lw=.5)
-                
-                # plot rolling average(s) according to color scheme
-                ax1.plot(trials,perf,color=cscheme[ii%2])
-                if plotRT:
-                    ax2.plot(trials,rt,color='g')
+                    ax1.axvline(last_trial+1,color='grey',lw=.5) # dividing boundary between blocks
+
+                # repeat for series2 data
+                if not series2 is None:
+                    data2 = rollingAvg(block, output=series2, **kwargs)
+                    data2 = data2[win_step-1::win_step]
+                    if ax2 is None:
+                        ax1.plot(trials,data2,color=colors2,ls='--')
+                    else:
+                        ax2.plot(trials,data2,color=colors2,ls='--')
+
+                ax1.plot(trials,data1,color=colors1[ii%2]) # plot rolling average according to color scheme
             
-    elif sess['sesstype'].iloc[0] == 'B':
-        # calculate rolling averages
-        perf = rollingAvg(sess, output='perf', **kwargs)
-        rt = rollingAvg(sess, output='rt')
-        
-        # align samples to trial numbers
-        trials = np.arange(perf.shape[0])+1
+    else:
+        data1 = rollingAvg(sess, output=series1, **kwargs) # calculate rolling average
+        trials = np.arange(data1.shape[0])+1 # align samples to trial numbers
 
         # downsample rolling average to sliding window step size
-        perf = perf[win_step-1::win_step]
-        rt = rt[win_step-1::win_step]
+        data1 = data1[win_step-1::win_step]
         trials = trials[win_step-1::win_step]
-
-        # plot rolling average(s) according to color scheme
-        ax1.plot(trials,perf,color=cscheme[1])
-        if plotRT:
-            ax2.plot(trials,rt,color='g')
         
-    else:
-        raise ValueError
+        # repeat for series2 data
+        if not series2 is None:
+            data2 = rollingAvg(sess, output=series2, **kwargs)
+            data2 = data2[win_step-1::win_step]
+            if ax2 is None:
+                ax1.plot(trials,data2,color=colors2,ls='--')
+            else:
+                ax2.plot(trials,data2,color=colors2,ls='--')
+
+        ax1.plot(trials,data1,color=colors1[1]) # plot rolling average according to color scheme
     
     ax1.set_title(date)
     ax1.set_xlabel('Free Trial')
-    ax1.set_ylabel('P(high > low)')
-    ax1.set_ylim([.4,1.01])
+    ax1.set_ylabel(ylabel1)
+    ax1.set_ylim(ylim1)
     
     # label and put limits on reaction time y-axis, if applicable
-    if plotRT:
-        ax2.set_ylabel('Reaction Time (ms)',color='g',rotation=270)
-        ax2.set_ylim([500,1000])
+    if not ax2 is None:
+        ax2.set_ylabel(ylabel2,color=colors2,rotation=270)
+        ax2.set_ylim(ylim2)
 
 def plotConfusions(data, compare='lr', sesstype=None, win_size=200, start=200, end='back', annot=True, model='lin'):
     '''

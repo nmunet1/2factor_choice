@@ -1,63 +1,102 @@
 import numpy as np
 import pandas as pd
+from scipy import stats
 from scipy.optimize import minimize
 
 import bhv_analysis as bhv
 from bhv_model import softmax
 
-class RescorlaWagnerModel(object):
+class RescorlaWagnerPlus(object):
 	'''
-	Basic reinforcement learning model using Rescorla-Wagner learning rule
+	Generalized variant of Rescorla-Wagner reinforcement learning model with side bias and decaying learning rates
 	'''
 
-	def __init__(self, alpha=0.01, w2=-0.1, w3=0.1):
+	def __init__(self, alpha=0.01, tau=0, gamma=0.01, c=0.1, beta=-0.1, delta=0.01, d=0.1, d_0=0.1):
 		'''
-		alpha: 	learning rate
-		w2: 	softmax weight of value difference
-		w3: 	softmax left/right bias
+		alpha: 		value learning rate
+		tau:		learning rate decay constant
+		gamma_c: 	stickiness learning rate
+		c:			stickiness feedback
+		beta: 		softmax inverse temperature
+		delta: 		softmax side bias
+		d:			left/right side bias feedback
+		d_0:		initial left/right side bias
 		'''
-		self.params_init = [alpha, w2, w3] # initial guess for parameter values
-		self.bounds = [(0,1), (None,None), (None,None)] # parmeter bounds
+		self.params_init = [alpha, tau, gamma, c, beta, delta, d, d_0] # initial guess for parameter values
+		self.bounds = [(0,1), (0,1), (0,1), (0,None), (None,None), (None,None), (0,None), (None,None)] # parameter bounds
+		self.params_fit = self.params_init # fitted parameters
+
+		# filter out Nonetype initial parameters and their bounds
+		filt = [x is None for x in self.params_init]
+		self.params_init = self.params_init[filt]
+		self.bounds = self.bounds[filt]
 
 		self.params_fit = self.params_init # fitted parameters
 		self.aic = None # Akaike Information Criterion of best fit model
 
+		self.levels2prob = {1: 0.7, 2: 0.4, 3: 0.1} # conversion from probability levels to probabilities of reward
 		self.levels2amnt = {1: 0.5, 2: 0.3, 3: 0.1} # conversion from amount levels to reward amounts in L
 
-	def learningRule(self, value_old, outcome, alpha):
+	def learningRule(self, value_old, feedback, rate):
 		'''
-		Basic Rescorla-Wagner learning rule
+		Basic incremental learning rule
 		
-		value_old: value to be updated
-		outcome:   trial outcome (i.e. amount rewarded)
-		alpha:     learning rate
+		value_old: 	value to be updated
+		feedback:	learning signal
+		rate:     	learning rate
 		'''
-		return value_old + alpha * (outcome - value_old)
+		return value_old + rate * (feedback - value_old)
 
-	def estHiddenStates(self, data, sim_choice = False, alpha=None, w2=None, w3=None):
+	def simulate(self, data, sim_choice, alpha=None, tau=None, gamma=None, c=None, beta=None, delta=None, d=None, d_0=None):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
 		data: 		DataFrame containing experimental dataset
 		sim_choice: if True, simulate choices as well as hidden states;
 					if False, simulate hidden states only and calculate likelihood of actual (non-simulated) choices
-		alpha:		learning rate
-		w2: 		softmax weight of value difference
-		w3: 		softmax left/right bias
+		alpha:		value learning rate
+		tau:		learning rate exponential decay
+		gamma:		stickiness learning rate
+		c:			stickiness feedback
+		beta: 		softmax weight of value difference
+		d: 			left/right side bias
 		'''
 		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
 		data = data.replace({'if_reward': {np.nan: 0}}) # replace if_reward nan values with 0s
 
-		estimates = pd.DataFrame()
-
 		if alpha is None:
 			alpha = self.params_fit[0]
 
-		if w2 is None:
-			w2 = self.params_fit[1]
+		if tau is None:
+			tau = self.params_fit[1]
 
-		if w3 is None:
-			w3 = self.params_fit[2]
+		if gamma is None:
+			gamma = self.params_fit[2]
+
+		if c is None:
+			c = self.params_fit[3]
+
+		if beta is None:
+			beta = self.params_fit[4]
+
+		if delta is None:
+			delta = self.params_fit[5]
+
+		if d is None:
+			d = self.params_fit[6]
+
+		if d_0 is None:
+			d_0 = self.params_fit[7]
+
+		sim_results = pd.DataFrame()
+		if sim_choice:
+			cols = ['v1','v2','v3','v4','v5','v6','v7','v8','v9', \
+				'c1','c2','c3','c4','c5','c6','c7','c8','c9', \
+				'side_bias', 'choice','outcome']
+		else:
+			cols = ['v1','v2','v3','v4','v5','v6','v7','v8','v9', \
+				'c1','c2','c3','c4','c5','c6','c7','c8','c9', \
+				'side_bias', 'choice','likelihood']
 
 		# iterate through valid blocks of each session
 		dates = data['date'].unique()
@@ -65,48 +104,96 @@ class RescorlaWagnerModel(object):
 			block = data[data['date']==date]
 
 			# initialize state values for block
-			block_est = np.zeros((block.shape[0],10))
+			block_sim = np.zeros((block.shape[0],len(cols)))
+			block_sim[0,18] = d_0
 
-			for ii in range(block_est.shape[0]):
+			for ii in range(block_sim.shape[0]):
 				trial = block.iloc[ii] # trial data
 
 				idx_l = trial['left_image'] - 1 # left image index
-				if not np.isnan(idx_l):
-					idx_l = int(idx_l)
-
 				idx_r = trial['right_image'] - 1 # right image index
-				if not np.isnan(idx_r):
+
+				# simulated probability of choosing left
+				p_l = np.nan
+				if np.isnan(idx_l):
+					idx_r = int(idx_r)
+					if sim_choice:
+						p_l = 0
+				elif np.isnan(idx_r):
+					idx_l = int(idx_l)
+					if sim_choice:
+						p_l = 1
+				else:
+					idx_l = int(idx_l)
 					idx_r = int(idx_r)
 
-				# probability of choosing left
-				if np.isnan(idx_l) or np.isnan(idx_r):
-					p_l = np.nan
+					q_l = block_sim[ii, idx_l] + block_sim[ii, idx_l+9]
+					q_r = block_sim[ii, idx_r] + block_sim[ii, idx_r+9]
+
+					p_l = softmax(q_l, q_r, beta, block_sim[ii,18])
+
+				if sim_choice:
+					# simulate choice and reward outcome
+					if stats.bernoulli.rvs(p_l):
+						choice = -1
+						chosen = idx_l
+						p_rwd = self.levels2prob[trial['left_prob_level']]
+						amnt_rwd = self.levels2amnt[trial['left_amnt_level']]
+					else:
+						choice = 1
+						chosen = idx_r
+						p_rwd = self.levels2prob[trial['right_prob_level']]
+						amnt_rwd = self.levels2amnt[trial['right_amnt_level']]
+
+					if trial['lever'] == choice:
+						outcome = amnt_rwd * trial['if_reward']
+					else:
+						outcome = amnt_rwd * stats.bernoulli.rvs(p_rwd)
+
+					# log choice and outcome
+					block_sim[ii, -2] = choice
+					block_sim[ii, -1] = outcome
+
 				else:
-					p_l = softmax(block_est[ii, idx_l], block_est[ii, idx_r], w2, w3)
+					# compute single-trial choice likelihood
+					if trial['lever'] == -1:
+						block_sim[ii, -1] = p_l # likelihood of left choice, assuming Bernoulli Distribution
+						chosen = idx_l
+						unchosen = idx_r
+						outcome = self.levels2amnt[trial['left_amnt_level']] * trial['if_reward'] # amount rewarded
 
-				# compute single-trial choice likelihood and update hidden state estimates
-				if trial['lever'] == -1:
-					block_est[ii, -1] = p_l # likelihood of left choice, assuming Bernoulli Distribution
-					chosen_img = idx_l
-					outcome = self.levels2amnt[trial['left_amnt_level']] * trial['if_reward'] # amount rewarded
-
-				elif trial['lever'] == 1:
-					block_est[ii, -1] = 1 - p_l # likelihood of right choice, assuming Bernoulli Distribution
-					chosen_img = idx_r
-					outcome = self.levels2amnt[trial['right_amnt_level']] * trial['if_reward']
+					elif trial['lever'] == 1:
+						block_sim[ii, -1] = 1 - p_l # likelihood of right choice, assuming Bernoulli Distribution
+						chosen = idx_r
+						unchosen = idx_l
+						outcome = self.levels2amnt[trial['right_amnt_level']] * trial['if_reward']
 
 				# update hidden state values
-				if ii < block_est.shape[0]-1:
+				if ii < block_sim.shape[0]-1:
 					for img in range(9):
-						if img == chosen_img:
-							block_est[ii+1, img] = self.learningRule(block_est[ii, img], outcome, alpha)
+						if img == chosen:
+							block_sim[ii+1, img] = self.learningRule(block_sim[ii, img], \
+								outcome, alpha*np.exp(-tau*ii)) # update value
+							block_sim[ii+1, img+9] = self.learningRule(block_sim[ii, img+9], \
+								c, gamma*np.exp(-tau*ii)) # increment choice bias
 						else:
-							block_est[ii+1, img] = block_est[ii, img]
+							block_sim[ii+1, img] = block_sim[ii, img] # maintain value
+							if img == unchosen:
+								block_sim[ii+1, img+9] = self.learningRule(block_sim[ii+1, img+9], \
+									0, gamma*np.exp(-tau*ii)) # decrement choice bias
+							else:
+								block_sim[ii+1, img+9] = block_sim[ii, img] # maintain choice bias
 
-			block_est = pd.DataFrame(block_est, columns=['v1','v2','v3','v4','v5','v6','v7','v8','v9','likelihood'])
-			estimates = estimates.append(block_est)
+					# update left/right side bias
+					if trial['lever'] < 0:
+						block_sim[ii+1, 18] = self.learningRule(block_sim[ii+1, 18], -d, delta*np.exp(-tau*ii))
+					else:
+						block_sim[ii+1, 18] = self.learningRule(block_sim[ii+1, 18], d, delta*np.exp(-tau*ii))
 
-		return estimates
+			block_sim = pd.DataFrame(block_sim, index=block.index, columns=cols)
+			sim_results = sim_results.append(block_sim)
+
+		return sim_results
 
 	def negLogLikelihood(self, params, data):
 		'''
@@ -116,9 +203,9 @@ class RescorlaWagnerModel(object):
 		data: 	DataFrame containing experimental dataset
 		'''
 		params = list(params)
-		estimates = self.estHiddenStates(data, *params)
+		sim_results = self.simulate(data, False, *params)
 
-		return -np.log(estimates['likelihood']).sum()
+		return -np.log(sim_results['likelihood']).sum()
 
 	def fit(self, data, params_init=None, verbose=False, **kwargs):
 		'''
@@ -144,6 +231,18 @@ class RescorlaWagnerModel(object):
 		self.params_fit = list(opt.x) # update fitted parameters
 		self.aic = 2*len(opt.x) + 2*opt.fun # Akaike Information Criterion
 
-		estimates = self.estHiddenStates(data, *self.params_fit)
+		sim_results = self.simulate(data, False, *self.params_fit)
 
-		return estimates, self.aic
+		return sim_results, self.aic
+
+class RescorlaWagner(RescorlaWagnerPlus):
+	'''
+	Basic Rescorla-Wagner model with stochastic (softmax) choice and fixed left-right bias
+	'''
+
+	def __init__(self, alpha=0.01, beta=-0.1, d_0=0.1):
+		super().__init__(self, alpha=alpha, tau=None, gamma=None, c=None, \
+			beta=beta, delta=delta, d=None, d_0=None)
+
+	def simulate(self, data, sim_choice, alpha=None, beta=None, d_0=None):
+		return super().simulate(alpha=alpha, beta=beta, d_0=d_0, gamma=0, delta=0)
