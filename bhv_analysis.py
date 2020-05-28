@@ -181,10 +181,13 @@ def confusions(data, compare='lr', sesstype=None, win_size=200, start=None, end=
                         
                         if compare in ['ab','lr']:
                             l_over_r = pair['lever'].replace({1:0}).replace({-1:1}).sum()
+                        elif compare in ['lr_sim']:
+                            l_over_r = pair['choice'].replace({1:0}).replace({-1:1}).sum()
+                        elif compare == 'lr_diff':
+                            lr_value_diff = pair['left_fit_value'].mean() - pair['right_fit_value'].mean()
                         total = pair['lever'].count()
-                        lr_value_diff = pair['left_fit_value'].mean() - pair['right_fit_value'].mean()
                         
-                        if compare in ['ab','lr']:
+                        if compare in ['ab','lr','lr_sim']:
                             conf_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += l_over_r
                             n[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += total
                         elif compare == 'lr_diff':
@@ -196,7 +199,7 @@ def confusions(data, compare='lr', sesstype=None, win_size=200, start=None, end=
                             conf_mat[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total - l_over_r
                             n[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total
 
-        if compare in ['ab','lr']:
+        if compare in ['ab','lr','lr_sim']:
             conf_mat = np.divide(conf_mat,n)
 
     return conf_mat
@@ -387,6 +390,10 @@ def plotConfusions(data, compare='lr', sesstype=None, win_size=200, start=200, e
         cbar_label = 'Predicted P(left > right)'
         vmin = 0
         vmax = 1
+    elif compare == 'lr_sim':
+        cbar_label = 'Simulated P(left > right)'
+        vmin = 0
+        vmax = 1
     
     # plot heatmap and subdividing gridlines
     sns.heatmap(np.round(conf_mat,2), vmin=vmin, vmax=vmax, cmap='plasma', annot=annot, cbar_kws={'label': cbar_label})
@@ -396,7 +403,7 @@ def plotConfusions(data, compare='lr', sesstype=None, win_size=200, start=200, e
     plt.axhline(6,color='w', lw=2)
     
     # add axis labels
-    if compare in ['lr','lr_diff','lr_model']:
+    if compare in ['lr','lr_diff','lr_model','lr_sim']:
         plt.xlabel('Left Image')
         plt.ylabel('Right Image')
     elif compare == 'ab':
@@ -447,7 +454,7 @@ def plotChoiceEvolution(data, compare='lr', sesstype=None, by=None, epoch_size=5
     '''
     step_size = epoch_size
 
-    if compare not in ['lr','ab']:
+    if compare not in ['lr','ab','lr_sim']:
         raise ValueError
 
     # ensure extent is compatible with epoch_size
@@ -501,7 +508,7 @@ def plotChoiceEvolution(data, compare='lr', sesstype=None, by=None, epoch_size=5
 
     plt.ylabel('Correlation with Final Epoch')
     if by is None:
-        plt.ylim([.92,1.005])
+        plt.ylim([.85,1.005])
 
     # if subdividing matrix, create margin in x-axis and add legend in the margin
     if by is not None:
