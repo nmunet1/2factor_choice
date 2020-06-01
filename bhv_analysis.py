@@ -12,7 +12,7 @@ def loadData():
     '''
     Reads .mat files containing single-session data into a multi-session pandas DataFrame
     '''
-    root = '../'
+    root = './Data'
     folders = ['bhv_allB','bhv_ABA'] # folders containing data for different session structures
     
     data = pd.DataFrame()
@@ -102,7 +102,7 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
         if output == 'perf':
             ts = (ts == block['lever']).replace({True:1, False:0})
         else:
-            ts = (ts == block['choice']).replace({True:1, False:0})
+            ts = block['choice'].replace({True:1, False:0}).apply(lambda x: x == ts)
 
     elif output == 'rt':
         ts = block['rt']
@@ -200,7 +200,8 @@ def confusions(data, compare='lr', sesstype=None, win_size=200, start=None, end=
                             n[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total
 
         if compare in ['ab','lr','lr_sim']:
-            conf_mat = np.divide(conf_mat,n)
+            n[n==0]=np.nan
+            conf_mat = conf_mat / n
 
     return conf_mat
 
@@ -258,9 +259,9 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
         ylim1 = [.4, 1.01]
         colors1 = ['blue', 'crimson']
     elif series1 == 'model':
-        ylabel1 = 'P(high > low'
+        ylabel1 = 'P(high > low)'
         ylim1 = [.4, 1.01]
-        colors1 = ['red', 'red']
+        colors1 = ['red','red']
     elif series1 == 'rt':
         ylabel1 = 'Reaction Time (ms)'
         ylim1 = [500, 1000]
@@ -279,7 +280,7 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
         elif series2 == 'model':
             if series1 == 'rt':
                 ax2 = ax1.twinx()
-                ylabel2 = 'P(high > low'
+                ylabel2 = 'P(high > low)'
                 ylim2 = [.4, 1.01]
             colors2 = 'red'
         elif series2 == 'rt':
@@ -289,6 +290,9 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
             colors2 = 'g'
         else:
             raise ValueError
+
+    if ax2 is None:
+        ax2 = ax1
     
     # chance and criterion performance lines
     ax1.axhline(.5,color='k',lw=.75)
@@ -317,12 +321,20 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
                 if not series2 is None:
                     data2 = rollingAvg(block, output=series2, **kwargs)
                     data2 = data2[win_step-1::win_step]
-                    if ax2 is None:
-                        ax1.plot(trials,data2,color=colors2,ls='--')
+
+                    if series2 == 'model' and len(data2.shape) > 1:
+                        data2 = data2.groupby(axis=1, level=0)
+                        ax2.errorbar(trials,data2.mean().to_numpy(),yerr=data2.sem().to_numpy().squeeze(), \
+                            color='red',ls='--',ecolor='pink')
                     else:
                         ax2.plot(trials,data2,color=colors2,ls='--')
 
-                ax1.plot(trials,data1,color=colors1[ii%2]) # plot rolling average according to color scheme
+                if series1 == 'model' and len(data1.shape) > 1:
+                    orig_shape = data1.shape
+                    data1 = data1.to_numpy().T.reshape((np.prod(orig_shape,)))
+                    sns.lineplot(np.tile(trials, orig_shape[1]), data1, color=colors1[ii%2], ax=ax1, ci='sd')
+                else:
+                    ax1.plot(trials,data1,color=colors1[ii%2])
             
     else:
         data1 = rollingAvg(sess, output=series1, **kwargs) # calculate rolling average
@@ -336,12 +348,22 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
         if not series2 is None:
             data2 = rollingAvg(sess, output=series2, **kwargs)
             data2 = data2[win_step-1::win_step]
-            if ax2 is None:
-                ax1.plot(trials,data2,color=colors2,ls='--')
+
+            if series2 == 'model' and len(data2.shape) > 1:
+                data2 = data2.groupby(axis=1, level=0)
+                ax2.errorbar(trials,data2.mean().to_numpy(),yerr=data2.sem().to_numpy().squeeze(), \
+                    color='red',ls='--',ecolor='pink')
             else:
                 ax2.plot(trials,data2,color=colors2,ls='--')
 
-        ax1.plot(trials,data1,color=colors1[1]) # plot rolling average according to color scheme
+        if series1 == 'model' and len(data1.shape) > 1:
+            orig_shape = data1.shape
+            data1 = data1.to_numpy().T.reshape((np.prod(orig_shape,)))
+            sns.lineplot(np.tile(trials, orig_shape[1]), data1, color=colors1[1], ax=ax1)
+            # sns.lineplot(trials, data1.to_numpy(), ci='sd')
+        else:
+            ax1.plot(trials,data1,color=colors1[1])
+
     
     ax1.set_title(date)
     ax1.set_xlabel('Free Trial')
@@ -349,7 +371,7 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
     ax1.set_ylim(ylim1)
     
     # label and put limits on reaction time y-axis, if applicable
-    if not ax2 is None:
+    if ax2 != ax1:
         ax2.set_ylabel(ylabel2,color=colors2,rotation=270)
         ax2.set_ylim(ylim2)
 

@@ -5,7 +5,7 @@ from scipy.optimize import minimize, basinhopping
 
 import bhv_analysis as bhv
 
-def dv_exp(amnt, prob, w1):
+def dv_exp(amnt, prob, w1=1):
     '''
     Exponential discounted value function
 
@@ -15,7 +15,7 @@ def dv_exp(amnt, prob, w1):
     '''
     return amnt*np.exp(w1*(1-prob))
 
-def dv_hyp(amnt, prob, w1):
+def dv_hyp(amnt, prob, w1=1):
     '''
     Hyperbolic discounted value function
 
@@ -25,9 +25,9 @@ def dv_hyp(amnt, prob, w1):
     '''
     return amnt / (1 + w1*(1-prob))
 
-def dv_lin(amnt, prob, w1):
+def dv_lin(amnt, prob, w1=1):
     '''
-    Hyperbolic discounted value function
+    Linear discounted value function
 
     amnt:   (float or numpy Array) reward amount
     prob:   (float or numpy Array) reward probability
@@ -35,9 +35,18 @@ def dv_lin(amnt, prob, w1):
     '''
     return amnt - w1*(1-prob)
 
-def prob_weight(p, gamma, delta):
+def prob_weight(p, gamma):
     '''
-    Weighting function for impact of outcome probability
+    1-parameter weighting function for impact of outcome probability
+
+    p: (float or numpy Array) prospect probability
+    gamma: (float or numpy Array) amount and direction of distortion
+    '''
+    return np.exp(-(-np.log(p))**gamma)
+
+def prob_weight2(p, gamma, delta):
+    '''
+    2-parameter weighting function for impact of outcome probability
 
     p: (float or numpy Array) prospect probability
     gamma: (float or numpy Array) curvature
@@ -45,19 +54,41 @@ def prob_weight(p, gamma, delta):
     '''
     return (delta*(p**gamma)) / (delta*(p**gamma) + (1-p)**gamma)
 
-def q_prospect(x, p, alpha, gamma, delta):
+def su_mult(x, p, alpha=1, gamma=1, delta=None):
     '''
-    Subjective value equation for gains under risk, based on prospect theory
+    Multiplicative subjective utility function for gains under risk, based on prospect theory
 
-    x: (float or numpy Array) prospect gain
-    p: (float or numpy Array) prospect probability
-    alpha: (float or numpy Array) curvature of gain utility function
-    gamma: (float or numpy Array) curvature of probability weight function
-    delta: (float or numpy Array) elevation of probability weight function
+    x:      (float or numpy Array) prospect gain
+    p:      (float or numpy Array) prospect probability
+    alpha:  (float or numpy Array) curvature of gain utility function
+    gamma:  (float or numpy Array) curvature of probability weight function
+    delta:  (float or numpy Array) elevation of probability weight function
     '''
-    return (x**alpha) * prob_weight(p, gamma, delta)
+    if delta is None:
+        return (x**alpha) * prob_weight(p, gamma)
+    else:
+        return (x**alpha) * prob_weight2(p, gamma, delta)
 
-def softmax(ql, qr, w2, w3):
+def su_add(x, p, alpha=1, beta_p=.5, gamma=1, delta=None):
+    '''
+    Additive subjective utility function for gains under risk
+
+    x:      (float or numpy Array) prospect gain
+    p:      (float or numpy Array) prospect probability
+    alpha:  (float or numpy Array) curvature of gain utility function
+    beta_p: (float or numpy Array) weight of probability relative to utility
+    gamma:  (float or numpy Array) curvature of probability weight function
+    delta:  (float or numpy Array) elevation of probability weight function
+    '''
+    if delta is None:
+        return (1-beta_p) * (x**alpha) + beta_p * prob_weight(p, gamma)
+    else:
+        return (1-beta_p) * (x**alpha) + beta_p * prob_weight2(p, gamma, delta)
+
+def su_hybrid(x, p, beta_mult=.5, alpha=1, beta_p=.5, gamma=1, delta=None):
+    return (1 - beta_mult) * su_add(x, p, alpha, beta_p, gamma, delta) + beta_mult * su_mult(x, p, alpha, gamma, delta)
+
+def softmax(ql, qr, w2=1, w3=0):
     '''
     Softmax function for choice of left image over right image
 
@@ -68,159 +99,154 @@ def softmax(ql, qr, w2, w3):
     '''
     return (1 + np.exp(w2 * (ql - qr) + w3))**-1
 
-def negLogLikelihood(params, amnt_l, prob_l, amnt_r, prob_r, k, n, q_fun):
+def estimateSubjValues(data, q_fun, params, param_labels):
     '''
-    Negative log-likelihood function for a set of image pairs
+    Estimate subjective values and log-likelihoods
 
-    params: (list) free parameters to fit, [(value curve params), (softmax params)], len >= 3
-    amnt_l:     (float or numpy Array) left benefit
-    prob_l:     (float or numpy Array) left cost
-    amnt_r:     (float or numpy Array) right benefit
-    prob_r:     (float or numpy Array) right cost
-    k:      (float or numpy Array) number of left choices
-    n:      (float or numpy Array) total number of choices
-    q_fun:  (function) discount value function
+    data:           (DataFrame) session data
+    q_fun:          (function) subjective utility/value function
+    params:         (list) free parameter values
+    param_labels:   (list) free parameter labels
     '''
-    params = list(params)
-    val_params = params[:-2]
-    choice_params = params[-2:]
-
-    ql = q_fun(amnt_l, prob_l, *val_params) # left discounted value
-    qr = q_fun(amnt_r, prob_r, *val_params) # right discounted value
-    
-    p_choose_l = softmax(ql, qr, *choice_params) # estimated probability of left choice
-    
-    negLL = -np.sum(stats.binom.logpmf(k, n, p_choose_l)) # negative log-likelihood
-    
-    return negLL
-
-def fitSubjValues(all_data, model='dv_lin', split_sess=False, verbose=False, **kwargs):
-    '''
-    Fits free parameters for subjective value and softmax choice curves
-
-    data: master dataset
-    model: subjective value model
-            'dv_lin': linear discounted value
-            'dv_hyp': hyperbolic discounted value
-            'dv_exp': exponential discounted value
-            'prospect': prospect theory
-    split_sess: if True, fits each session individually
-    verbose: if True, displays summary of fit results
-    '''
-    # select last 200 free trials of each valid session, convert choices to binary (1 = left, 0 = right)
-    all_data = all_data[bhv.isvalid(all_data,sets='new')].groupby('date').tail(200)
-    all_data = all_data.replace({'lever': {1: 0}}).replace({'lever': {-1: 1}})
-
-    groups = ['left_prob_level', 'left_amnt_level', 'right_prob_level', 'right_amnt_level']
     levels2prob = {1.0: 0.7, 2.0: 0.4, 3.0: 0.1}
     levels2amnt = {1.0: 0.5, 2.0: 0.3, 3.0: 0.1}
 
-    # pick appropriate discounted value function according to model and initial free parameter guesses
+    choice_params = {}
+    val_params = {}
+    for key, value in zip(param_labels, params):
+        if key in ['w2','w3']:
+            choice_params[key] = value
+        else:
+            val_params[key] = value
+
+    pairs = data.groupby(['date', 'left_prob_level', 'left_amnt_level', 'right_prob_level', 'right_amnt_level'])
+
+    prob_l = pairs['left_prob_level'].mean().replace(levels2prob).to_numpy() # left reward probability
+    amnt_l = pairs['left_amnt_level'].mean().replace(levels2amnt).to_numpy() # left reward amount
+    prob_r = pairs['right_prob_level'].mean().replace(levels2prob).to_numpy() # right reward probability
+    amnt_r = pairs['right_amnt_level'].mean().replace(levels2amnt).to_numpy() # right reward probability
+
+    n = pairs['lever'].count().to_numpy() # number of trials
+    k = pairs['lever'].sum().to_numpy() # number of left choices
+
+    ql = q_fun(amnt_l, prob_l, **val_params) # left discounted value
+    qr = q_fun(amnt_r, prob_r, **val_params) # right discounted value
+    
+    p_l = softmax(ql, qr, **choice_params) # estimated probability of left choice
+
+    ll = stats.binom.logpmf(k, n , p_l) # log-likelihood
+
+    est = {'k':k, 'n':n, 'left_fit_value':ql, 'right_fit_value':qr, 'prob_choose_left':p_l, 'log-likelihood':ll}
+    est.update(val_params)
+    est.update(choice_params)
+
+    return pd.DataFrame(est, index=pairs.mean().index)
+
+def negLogLikelihood(params, data, q_fun, param_labels):
+    '''
+    Negative log-likelihood function for a set of image pairs
+
+    params:         (list) free parameter values
+    data:           (DataFrame) session data
+    q_fun:          (function) subjective utility/value function
+    param_labels:   (list) free parameter labels
+    '''
+    q_ests = estimateSubjValues(data, q_fun, params, param_labels)
+
+    return -q_ests['log-likelihood'].sum()
+
+def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='local', **kwargs):
+    '''
+    Fits free parameters for subjective value and softmax choice curves
+
+    data:       (DataFrame) dataset or block data
+    model:      (str) subjective value model
+                    'dv_lin':   linear discounted value
+                    'dv_hyp':   hyperbolic discounted value
+                    'dv_exp':   exponential discounted value
+                    'su_mult':  multiplicative subjective utility
+                    'su_add':   additive subjective utility
+                    'ev':       expected value
+                    'ev_add':   additive "expected value" function
+    prelec:     (bool) if True, use Prelec probability weighting function
+    verbose:    (bool) if True, displays summary of fit results
+    min_type:   (str) minimization type ('local' or 'global')
+    '''
+    # select last 200 free trials of each valid session, convert choices to binary (1 = left, 0 = right)
+    data = data[bhv.isvalid(data, sets='new')].groupby('date').tail(200)
+    data = data.replace({'lever': {1: 0}}).replace({'lever': {-1: 1}})
+
+    # select model settings
     if model == 'dv_lin':
         q_fun = dv_lin
-        param_labels = ['w1','w2','w3']
-        params = [.1,-.1,.1]
-        bnds = [(None,None), (None,0), (None,None)]
+        params_init = {'w1':0.1,'w2':-0.1, 'w3':0.1}
+        bounds = {'w1':(None,None), 'w2':(None,0), 'w3':(None,None)}
     elif model == 'dv_hyp':
         q_fun = dv_hyp
-        param_labels = ['w1','w2','w3']
-        params = [.1,-.1,.1]
-        bnds = [(0,None), (None,0), (None,None)]
+        params_init = {'w1':0.1,'w2':-0.1, 'w3':0.1}
+        bounds = {'w1':(0,None), 'w2':(None,0), 'w3':(None,None)}
     elif model == 'dv_exp':
         q_fun = dv_exp
-        param_labels = ['w1','w2','w3']
-        params = [.1,-.1,.1]
-        bnds = [(None,None), (None,0), (None,None)]
-    elif model == 'prospect':
-        q_fun = q_prospect
-        param_labels = ['alpha','gamma','delta','w2','w3']
-        params = [.1,.1,.1,-.1,.1]
-        bnds = [(0,1), (0,1), (0,1), (None,None), (None,None)]
+        params_init = {'w1':0.1, 'w2':-0.1, 'w3':0.1}
+        bounds = {'w1':(None,None), 'w2':(None,0), 'w3':(None,None)}
     elif model == 'ev':
-        q_fun = lambda p, x: p*x
-        param_labels = ['w2','w3']
-        params = [-.1,.1]
-        bnds = [(None,0), (None,None)]
+        q_fun = su_mult
+        params_init = {'w2':-0.1, 'w3':0.1}
+        bounds = {'w2':(None,0), 'w3':(None,None)}
+    elif model == 'ev_add':
+        q_fun = su_add
+        params_init = {'beta_p':0.5, 'w2':-0.1, 'w3':0.1}
+        bounds = {'beta_p':(0,1), 'w2':(None,0), 'w3':(None,None)}
+    elif model == 'su_mult':
+        q_fun = su_mult
+        params_init = {'alpha':0.1, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
+        bounds = {'alpha':(0,1), 'gamma':(0,1), 'w2':(None,None), 'w3':(None,None)}
+        if not prelec:
+            params_init['delta'] = 0.1
+            bounds['delta'] = (0,1)
+    elif model == 'su_add':
+        q_fun = su_add
+        params_init = {'alpha':0.1, 'beta_p':0.5, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
+        bounds = {'alpha':(0,1), 'beta_p':(0,1), 'gamma':(0,1), 'w2':(None,None), 'w3':(None,None)}
+        if not prelec:
+            params_init['delta'] = 0.1
+            bounds['delta'] = (0,1)
+    elif model == 'su_hybrid':
+        q_fun = su_hybrid
+        params_init = {'beta_mult':0.5, 'alpha':0.1, 'beta_p':0.5, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
+        bounds = {'beta_mult':(0,1), 'alpha':(0,1), 'beta_p':(0,1), 'gamma':(0,1), 'w2':(None,None), 'w3':(None,None)}
+        if not prelec:
+            params_init['delta'] = 0.1
+            bounds['delta'] = (0,1)
     else:
         raise ValueError
 
-    if split_sess:
-        dates = all_data['date'].unique()
-        groups.insert(0,'date')
-        result = pd.DataFrame()
-        aic = []
+    fits = pd.DataFrame() # fitted parameters, estimated subjective values, and relevant data
 
-        for date in dates:
-            pairs = all_data[all_data['date']==date].groupby(groups)
+    dates = data['date'].unique()
+    for date in dates:
+        sess_data = data[data['date']==date]
 
-            prob_l = np.array(pairs['left_prob_level'].mean().replace(levels2prob)) # left reward probability
-            amnt_l = np.array(pairs['left_amnt_level'].mean().replace(levels2amnt)) # left reward amount
-            prob_r = np.array(pairs['right_prob_level'].mean().replace(levels2prob)) # right reward probability
-            amnt_r = np.array(pairs['right_amnt_level'].mean().replace(levels2amnt)) # right reward probability
+        param_labels = params_init.keys()
+        params = [params_init[label] for label in param_labels]
+        bnds = [bounds[label] for label in param_labels]
 
-            n = np.array(pairs['lever'].count()) # number of trials
-            k = np.array(pairs['lever'].sum()) # number of left choices
-
-            opt = minimize(negLogLikelihood, params, args=(amnt_l, prob_l, amnt_r, prob_r, k, n, q_fun), \
+        if min_type == 'local':
+            opt = minimize(negLogLikelihood, params, args=(sess_data, q_fun, param_labels), \
                 tol=1e-4, bounds=bnds, **kwargs)
             if verbose or not opt.success:
                 print(opt)
 
-            param_fits = list(opt.x) # final fitted parameters
-            q_fun_fits = param_fits[:-2]
-            softmax_fits = param_fits[-2:]
+        elif min_type == 'global':
+            opt = shgo(negLogLikelihood, bounds, args=(sess_data, q_fun, param_labels), \
+                minimizer_kwargs={'method':'L-BFGS-B'}, options={'f_tol':1e-4, 'max_iter':100, 'disp':verbose})
 
-            ql = q_fun(amnt_l, prob_l, *q_fun_fits) # fitted left image values
-            qr = q_fun(amnt_r, prob_r, *q_fun_fits) # fitted right image values
-            pl = softmax(ql, qr, *softmax_fits) # fitted propabilities of left choice over right
+        else:
+            raise ValueError
 
-            # compile DataFrame of fitted values for each pair
-            sess_res = pairs.mean().index.to_frame()
-            sess_res.insert(len(sess_res.columns), 'k', k)
-            sess_res.insert(len(sess_res.columns), 'n', n)
-            sess_res.insert(len(sess_res.columns), 'prob_choose_left', pl)
-            sess_res.insert(len(sess_res.columns), 'left_fit_value', ql)
-            sess_res.insert(len(sess_res.columns), 'right_fit_value', qr)
-            for fit_value, label in zip(param_fits, param_labels):
-                sess_res.insert(len(sess_res.columns), label, fit_value)
+        sess_fits = estimateSubjValues(sess_data, q_fun, opt.x, param_labels)
+        fits = pd.concat([fits, sess_fits])
 
-            result = pd.concat([result, sess_res], ignore_index = True)
-            aic.append(2*len(param_fits) + 2*opt.fun)
-    else:
-        # select last 200 free trials of each valid session, and convert lever values to binary (1 = left, 0 = right)
-        pairs = all_data.groupby(groups)
+    aic = 2*len(params)*len(dates) - 2*fits['log-likelihood'].sum()
 
-        prob_l = np.array(pairs['left_prob_level'].mean().replace(levels2prob)) # left reward probability
-        amnt_l = np.array(pairs['left_amnt_level'].mean().replace(levels2amnt)) # left reward amount
-        prob_r = np.array(pairs['right_prob_level'].mean().replace(levels2prob)) # right reward probability
-        amnt_r = np.array(pairs['right_amnt_level'].mean().replace(levels2amnt)) # right reward probability
-
-        n = np.array(pairs['lever'].count()) # number of trials
-        k = np.array(pairs['lever'].sum()) # number of left choices
-
-        opt = minimize(negLogLikelihood, params, args=(amnt_l, prob_l, amnt_r, prob_r, k, n, q_fun), \
-            tol=1e-4, bounds=bnds, **kwargs)
-        if verbose or not opt.success:
-            print(opt)
-
-        param_fits = list(opt.x) # final fitted parameters
-        q_fun_fits = param_fits[:-2]
-        softmax_fits = param_fits[-2:]
-
-        ql = q_fun(amnt_l, prob_l, *q_fun_fits) # fitted left image values
-        qr = q_fun(amnt_r, prob_r, *q_fun_fits) # fitted right image values
-        pl = softmax(ql, qr, *softmax_fits) # fitted propabilities of left choice over right
-
-        # compile DataFrame of fitted values for each contingency pair
-        result = pairs.mean().index.to_frame()
-        result.insert(len(result.columns), 'k', k)
-        result.insert(len(result.columns), 'n', n)
-        result.insert(len(result.columns), 'prob_choose_left', pl)
-        result.insert(len(result.columns), 'left_fit_value', ql)
-        result.insert(len(result.columns), 'right_fit_value', qr)
-        for fit_value, label in zip(param_fits, param_labels):
-            result.insert(len(result.columns), label, fit_value)
-
-        aic = 2*len(param_fits) + 2*opt.fun
-
-    return result, aic
+    return fits, aic
