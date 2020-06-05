@@ -1,9 +1,19 @@
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.optimize import minimize, basinhopping
+from scipy.optimize import minimize, basinhopping, shgo
 
 import bhv_analysis as bhv
+
+def data2numpy(data):
+    pairs = data.groupby(['date', 'left_image', 'right_image'])
+
+    img_l = pairs['left_image'].mean().to_numpy() # left image IDs
+    img_r = pairs['right_image'].mean().to_numpy() # right image IDs
+    k = pairs['lever'].sum().to_numpy() # number of left choices
+    n = pairs['lever'].count().to_numpy() # number of trials
+
+    return img_l, img_r, k, n
 
 def dv_exp(amnt, prob, w1=1):
     '''
@@ -88,7 +98,7 @@ def su_add(x, p, alpha=1, beta_p=.5, gamma=1, delta=None):
 def su_hybrid(x, p, beta_mult=.5, alpha=1, beta_p=.5, gamma=1, delta=None):
     return (1 - beta_mult) * su_add(x, p, alpha, beta_p, gamma, delta) + beta_mult * su_mult(x, p, alpha, gamma, delta)
 
-def softmax(ql, qr, w2=1, w3=0):
+def softmax(ql, qr, w2=-0.1, w3=0):
     '''
     Softmax function for choice of left image over right image
 
@@ -99,7 +109,7 @@ def softmax(ql, qr, w2=1, w3=0):
     '''
     return (1 + np.exp(w2 * (ql - qr) + w3))**-1
 
-def estimateSubjValues(data, q_fun, params, param_labels):
+def estimateSubjValues(params, param_labels, q_fun, img_l, img_r, k, n):
     '''
     Estimate subjective values and log-likelihoods
 
@@ -108,8 +118,10 @@ def estimateSubjValues(data, q_fun, params, param_labels):
     params:         (list) free parameter values
     param_labels:   (list) free parameter labels
     '''
-    levels2prob = {1.0: 0.7, 2.0: 0.4, 3.0: 0.1}
-    levels2amnt = {1.0: 0.5, 2.0: 0.3, 3.0: 0.1}
+    amnt_l = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])[img_l.astype(int)-1]
+    amnt_r = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])[img_r.astype(int)-1]
+    prob_l = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])[img_l.astype(int)-1]
+    prob_r = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])[img_r.astype(int)-1]
 
     choice_params = {}
     val_params = {}
@@ -119,30 +131,21 @@ def estimateSubjValues(data, q_fun, params, param_labels):
         else:
             val_params[key] = value
 
-    pairs = data.groupby(['date', 'left_prob_level', 'left_amnt_level', 'right_prob_level', 'right_amnt_level'])
-
-    prob_l = pairs['left_prob_level'].mean().replace(levels2prob).to_numpy() # left reward probability
-    amnt_l = pairs['left_amnt_level'].mean().replace(levels2amnt).to_numpy() # left reward amount
-    prob_r = pairs['right_prob_level'].mean().replace(levels2prob).to_numpy() # right reward probability
-    amnt_r = pairs['right_amnt_level'].mean().replace(levels2amnt).to_numpy() # right reward probability
-
-    n = pairs['lever'].count().to_numpy() # number of trials
-    k = pairs['lever'].sum().to_numpy() # number of left choices
-
     ql = q_fun(amnt_l, prob_l, **val_params) # left discounted value
     qr = q_fun(amnt_r, prob_r, **val_params) # right discounted value
     
     p_l = softmax(ql, qr, **choice_params) # estimated probability of left choice
 
-    ll = stats.binom.logpmf(k, n , p_l) # log-likelihood
+    ll = stats.binom.logpmf(k, n, p_l) # log-likelihood
 
-    est = {'k':k, 'n':n, 'left_fit_value':ql, 'right_fit_value':qr, 'prob_choose_left':p_l, 'log-likelihood':ll}
+    est = {'left_image':img_l, 'right_image':img_r, 'left_fit_value':ql, 'right_fit_value':qr, \
+        'prob_choose_left':p_l, 'log-likelihood':ll, 'k':k, 'n':n}
     est.update(val_params)
     est.update(choice_params)
 
-    return pd.DataFrame(est, index=pairs.mean().index)
+    return est
 
-def negLogLikelihood(params, data, q_fun, param_labels):
+def negLogLikelihood(params, param_labels, q_fun, img_l, img_r, k, n):
     '''
     Negative log-likelihood function for a set of image pairs
 
@@ -151,11 +154,11 @@ def negLogLikelihood(params, data, q_fun, param_labels):
     q_fun:          (function) subjective utility/value function
     param_labels:   (list) free parameter labels
     '''
-    q_ests = estimateSubjValues(data, q_fun, params, param_labels)
+    ll = estimateSubjValues(params, param_labels, q_fun, img_l, img_r, k, n)['log-likelihood']
 
-    return -q_ests['log-likelihood'].sum()
+    return -ll.sum()
 
-def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='local', **kwargs):
+def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='global', **kwargs):
     '''
     Fits free parameters for subjective value and softmax choice curves
 
@@ -181,22 +184,32 @@ def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='lo
         q_fun = dv_lin
         params_init = {'w1':0.1,'w2':-0.1, 'w3':0.1}
         bounds = {'w1':(None,None), 'w2':(None,0), 'w3':(None,None)}
+
     elif model == 'dv_hyp':
         q_fun = dv_hyp
         params_init = {'w1':0.1,'w2':-0.1, 'w3':0.1}
         bounds = {'w1':(0,None), 'w2':(None,0), 'w3':(None,None)}
+
     elif model == 'dv_exp':
         q_fun = dv_exp
         params_init = {'w1':0.1, 'w2':-0.1, 'w3':0.1}
         bounds = {'w1':(None,None), 'w2':(None,0), 'w3':(None,None)}
+
     elif model == 'ev':
         q_fun = su_mult
         params_init = {'w2':-0.1, 'w3':0.1}
         bounds = {'w2':(None,0), 'w3':(None,None)}
+
     elif model == 'ev_add':
         q_fun = su_add
         params_init = {'beta_p':0.5, 'w2':-0.1, 'w3':0.1}
         bounds = {'beta_p':(0,1), 'w2':(None,0), 'w3':(None,None)}
+
+    elif model == 'ev_hybrid':
+        q_fun = su_hybrid
+        params_init = {'beta_mult':0.5, 'beta_p':0.5, 'w2':-0.1, 'w3':0.1}
+        bounds = {'beta_mult':(0,1), 'beta_p':(0,1), 'w2':(None,0), 'w3':(None,None)}
+
     elif model == 'su_mult':
         q_fun = su_mult
         params_init = {'alpha':0.1, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
@@ -204,6 +217,7 @@ def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='lo
         if not prelec:
             params_init['delta'] = 0.1
             bounds['delta'] = (0,1)
+
     elif model == 'su_add':
         q_fun = su_add
         params_init = {'alpha':0.1, 'beta_p':0.5, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
@@ -232,20 +246,21 @@ def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='lo
         bnds = [bounds[label] for label in param_labels]
 
         if min_type == 'local':
-            opt = minimize(negLogLikelihood, params, args=(sess_data, q_fun, param_labels), \
+            opt = minimize(negLogLikelihood, params, args=(param_labels, q_fun, *data2numpy(sess_data)), \
                 tol=1e-4, bounds=bnds, **kwargs)
             if verbose or not opt.success:
                 print(opt)
 
         elif min_type == 'global':
-            opt = shgo(negLogLikelihood, bounds, args=(sess_data, q_fun, param_labels), \
-                minimizer_kwargs={'method':'L-BFGS-B'}, options={'f_tol':1e-4, 'max_iter':100, 'disp':verbose})
+            opt = basinhopping(negLogLikelihood, params, minimizer_kwargs={'method':'L-BFGS-B', \
+                'args':(param_labels, q_fun, *data2numpy(sess_data)), 'bounds':bnds, 'tol':1e-4}, disp=verbose)
 
         else:
             raise ValueError
 
-        sess_fits = estimateSubjValues(sess_data, q_fun, opt.x, param_labels)
-        fits = pd.concat([fits, sess_fits])
+        sess_fits = estimateSubjValues(opt.x, param_labels, q_fun, *data2numpy(sess_data))
+        sess_fits['date'] = date
+        fits = pd.concat([fits, pd.DataFrame(sess_fits)])
 
     aic = 2*len(params)*len(dates) - 2*fits['log-likelihood'].sum()
 

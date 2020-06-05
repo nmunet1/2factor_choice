@@ -104,6 +104,9 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
         else:
             ts = block['choice'].replace({True:1, False:0}).apply(lambda x: x == ts)
 
+    elif output == 'model_accuracy':
+        ts = block['choice'].apply(lambda x: x == block['lever'])
+
     elif output == 'rt':
         ts = block['rt']
 
@@ -112,9 +115,9 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
     
     return ts.rolling(window=win_size, min_periods=min_trials).mean()
 
-def confusions(data, compare='lr', sesstype=None, win_size=200, start=None, end='back', model='dv_lin'):
+def choiceMat(data, compare='lr', sesstype=None, win_size=200, start=None, end='back', fits=None, model_params={}):
     '''
-    Calculate confusion matrix for all possible contingency pairs
+    Calculate choice matrix for all possible contingency pairs
 
     data:     (DataFrame) single- or multi-session dataset
     compare:  (string) values to be compared
@@ -149,24 +152,27 @@ def confusions(data, compare='lr', sesstype=None, win_size=200, start=None, end=
         raise ValueError
 
     if compare == 'lr_model':
-        conf_mat = np.full((9,9), np.nan)
-        model_fits = bhv_model.fitSubjValues(data, model=model)[0]
+        choice_mat = np.full((9,9), np.nan)
 
-        for l_prob in range(3):
-            for l_amnt in range(3):
-                for r_prob in range(3):
-                    for r_amnt in range(3):
-                        try:
-                            conf_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] = \
-                                model_fits.loc[(1+l_prob, 1+l_amnt, 1+r_prob, 1+r_amnt)]['prob_choose_left']
-                        except:
-                            conf_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] = np.nan
+        if fits is None:
+            model_fits = bhv_model.fitSubjValues(data, **model_params)[0]
+        else:
+            model_fits = fits
+
+        for img_l in range(1,10):
+            for img_r in range(1,10):
+                try:
+                    choice_mat[img_r-1, img_l-1] = \
+                        model_fits[(model_fits['left_image']==img_l) & \
+                        (model_fits['right_image']==img_r)]['prob_choose_left'].mean()
+                except:
+                    choice_mat[img_r-1, img_l-1] = np.nan
 
     else:
         data = data[isvalid(data,sets='new')].groupby('date').nth(trials)
 
         # initialize confusion matrix and sample counts
-        conf_mat = np.zeros((9,9))
+        choice_mat = np.zeros((9,9))
         n = np.zeros((9,9))
 
         # iterate through all contingency pairs and calculate confusions
@@ -188,28 +194,28 @@ def confusions(data, compare='lr', sesstype=None, win_size=200, start=None, end=
                         total = pair['lever'].count()
                         
                         if compare in ['ab','lr','lr_sim']:
-                            conf_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += l_over_r
+                            choice_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += l_over_r
                             n[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += total
                         elif compare == 'lr_diff':
-                            conf_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += lr_value_diff
+                            choice_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += lr_value_diff
                         else:
                             raise ValueError
                         
                         if compare=='ab':
-                            conf_mat[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total - l_over_r
+                            choice_mat[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total - l_over_r
                             n[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total
 
         if compare in ['ab','lr','lr_sim']:
             n[n==0]=np.nan
-            conf_mat = conf_mat / n
+            choice_mat = choice_mat / n
 
-    return conf_mat
+    return choice_mat
 
-def subdivide(conf_mat, by):
+def subdivide(choice_mat, by):
     '''
     Subdivides confusion matrix into submatrices grouped by reward probability or amount
 
-    conf_mat: (numpy Array) confusion matrix
+    choice_mat: (numpy Array) confusion matrix
     by:       (string) grouping dimension
                     'prob': group by reward probability
                     'amnt': group by reward amount
@@ -222,15 +228,15 @@ def subdivide(conf_mat, by):
     elif by == 'amnt':
         levels = ['High A', 'Med A', 'Low A']
         # re-sort matrix by amount level
-        conf_mat = conf_mat[[0,3,6,1,4,7,2,5,8],:]
-        conf_mat = conf_mat[:,[0,3,6,1,4,7,2,5,8]]
+        choice_mat = choice_mat[[0,3,6,1,4,7,2,5,8],:]
+        choice_mat = choice_mat[:,[0,3,6,1,4,7,2,5,8]]
     else:
         raise ValueError
 
     ii = 0
     for b in range(3):
         for a in range(3):
-            groups[ii,:] = conf_mat[b*3:(b*3)+3, a*3:(a*3)+3].flatten()
+            groups[ii,:] = choice_mat[b*3:(b*3)+3, a*3:(a*3)+3].flatten()
             labels.append('%s v %s' % (levels[a], levels[b]))
             ii += 1
 
@@ -262,6 +268,10 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
         ylabel1 = 'P(high > low)'
         ylim1 = [.4, 1.01]
         colors1 = ['red','red']
+    elif series1 == 'model_accuracy':
+        ylabel1 = '% Correct'
+        ylim1 = [0, 1]
+        colors1 = ['blue','blue']
     elif series1 == 'rt':
         ylabel1 = 'Reaction Time (ms)'
         ylim1 = [500, 1000]
@@ -272,13 +282,13 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
     # series2 plot settings
     if not series2 is None:
         if series2 == 'perf':
-            if series1 == 'rt':
+            if series1 in ['model_accuracy','rt']:
                 ax2 = ax1.twinx() # add 2nd axis
                 ylabel2 = 'P(high > low)'
                 ylim2 = [.4, 1.01]
             colors2 = 'grey'
         elif series2 == 'model':
-            if series1 == 'rt':
+            if series1 in ['model_accuracy','rt']:
                 ax2 = ax1.twinx()
                 ylabel2 = 'P(high > low)'
                 ylim2 = [.4, 1.01]
@@ -322,17 +332,17 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
                     data2 = rollingAvg(block, output=series2, **kwargs)
                     data2 = data2[win_step-1::win_step]
 
-                    if series2 == 'model' and len(data2.shape) > 1:
+                    if len(data2.shape) > 1:
                         data2 = data2.groupby(axis=1, level=0)
                         ax2.errorbar(trials,data2.mean().to_numpy(),yerr=data2.sem().to_numpy().squeeze(), \
                             color='red',ls='--',ecolor='pink')
                     else:
                         ax2.plot(trials,data2,color=colors2,ls='--')
 
-                if series1 == 'model' and len(data1.shape) > 1:
+                if len(data1.shape) > 1:
                     orig_shape = data1.shape
-                    data1 = data1.to_numpy().T.reshape((np.prod(orig_shape,)))
-                    sns.lineplot(np.tile(trials, orig_shape[1]), data1, color=colors1[ii%2], ax=ax1, ci='sd')
+                    data1 = data1.to_numpy().T.reshape((np.prod(orig_shape)))
+                    sns.lineplot(np.tile(trials, orig_shape[1]), data1, color=colors1[ii%2], ax=ax1)
                 else:
                     ax1.plot(trials,data1,color=colors1[ii%2])
             
@@ -349,14 +359,14 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
             data2 = rollingAvg(sess, output=series2, **kwargs)
             data2 = data2[win_step-1::win_step]
 
-            if series2 == 'model' and len(data2.shape) > 1:
+            if len(data2.shape) > 1:
                 data2 = data2.groupby(axis=1, level=0)
                 ax2.errorbar(trials,data2.mean().to_numpy(),yerr=data2.sem().to_numpy().squeeze(), \
                     color='red',ls='--',ecolor='pink')
             else:
                 ax2.plot(trials,data2,color=colors2,ls='--')
 
-        if series1 == 'model' and len(data1.shape) > 1:
+        if len(data1.shape) > 1:
             orig_shape = data1.shape
             data1 = data1.to_numpy().T.reshape((np.prod(orig_shape,)))
             sns.lineplot(np.tile(trials, orig_shape[1]), data1, color=colors1[1], ax=ax1)
@@ -375,7 +385,8 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
         ax2.set_ylabel(ylabel2,color=colors2,rotation=270)
         ax2.set_ylim(ylim2)
 
-def plotConfusions(data, compare='lr', sesstype=None, win_size=200, start=200, end='back', annot=True, model='lin'):
+def plotChoiceMat(data, compare='lr', sesstype=None, win_size=200, start=200, end='back', annot=True, \
+    fits=None, model_params={}):
     '''
     Plots a confusion matrix for all possible contingency pairs
 
@@ -393,7 +404,8 @@ def plotConfusions(data, compare='lr', sesstype=None, win_size=200, start=200, e
                     'front': start from first trial, going forward
     annot:    (Boolean) if True, annotates each box of matrix with its value
     '''
-    conf_mat = confusions(data, compare=compare, sesstype=sesstype, win_size=win_size, start=start, end=end, model=model)
+    choice_mat = choiceMat(data, compare=compare, sesstype=sesstype, win_size=win_size, start=start, end=end, 
+        fits=fits, model_params=model_params)
     
     # set colorbar label and limits according to specified comparison
     if compare == 'lr':
@@ -418,7 +430,7 @@ def plotConfusions(data, compare='lr', sesstype=None, win_size=200, start=200, e
         vmax = 1
     
     # plot heatmap and subdividing gridlines
-    sns.heatmap(np.round(conf_mat,2), vmin=vmin, vmax=vmax, cmap='plasma', annot=annot, cbar_kws={'label': cbar_label})
+    sns.heatmap(np.round(choice_mat,2), vmin=vmin, vmax=vmax, cmap='plasma', annot=annot, cbar_kws={'label': cbar_label})
     plt.axvline(3,color='w', lw=2)
     plt.axvline(6,color='w', lw=2)
     plt.axhline(3,color='w', lw=2)
@@ -451,7 +463,7 @@ def plotConfusions(data, compare='lr', sesstype=None, win_size=200, start=200, e
         else:
             plt.title('Trials %i-%i' % (start, start+win_size))
     
-    return conf_mat
+    return choice_mat
 
 def plotChoiceEvolution(data, compare='lr', sesstype=None, by=None, epoch_size=50, extent=500, end = 'front'):
     '''
@@ -485,7 +497,7 @@ def plotChoiceEvolution(data, compare='lr', sesstype=None, by=None, epoch_size=5
     extent = (extent//epoch_size) * epoch_size
 
     # get final epoch choice matrix to use as standard for comparison
-    final_epoch = confusions(data, compare=compare, sesstype=sesstype, win_size=epoch_size, end='back')
+    final_epoch = choiceMat(data, compare=compare, sesstype=sesstype, win_size=epoch_size, end='back')
     if by is None:
         final_epoch = final_epoch.flatten()
         final_epoch = final_epoch[~np.isnan(final_epoch)]
@@ -502,7 +514,7 @@ def plotChoiceEvolution(data, compare='lr', sesstype=None, by=None, epoch_size=5
             start += epoch_size
 
         # sample epoch
-        epoch = confusions(data, compare=compare, sesstype=sesstype, win_size=epoch_size, start=start, end=end)
+        epoch = choiceMat(data, compare=compare, sesstype=sesstype, win_size=epoch_size, start=start, end=end)
 
         # subdivide choice matrices, if applicable
         if by is None:
