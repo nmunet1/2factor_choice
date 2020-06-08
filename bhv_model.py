@@ -98,16 +98,16 @@ def su_add(x, p, alpha=1, beta_p=.5, gamma=1, delta=None):
 def su_hybrid(x, p, beta_mult=.5, alpha=1, beta_p=.5, gamma=1, delta=None):
     return (1 - beta_mult) * su_add(x, p, alpha, beta_p, gamma, delta) + beta_mult * su_mult(x, p, alpha, gamma, delta)
 
-def softmax(ql, qr, w2=-0.1, w3=0):
+def softmax(ql, qr, beta=-0.1, lr_bias=0):
     '''
     Softmax function for choice of left image over right image
 
     ql:   (float or numpy Array) left subjective value
     qr:   (float or numpy Array) right subjective value
-    w2:     (float or numpy Array) value difference weight
-    w3:     (float or numpy Array) left/right bias
+    beta:     (float or numpy Array) value difference weight
+    lr_bias:     (float or numpy Array) left/right bias
     '''
-    return (1 + np.exp(w2 * (ql - qr) + w3))**-1
+    return (1 + np.exp(beta * (ql - qr) + lr_bias))**-1
 
 def estimateSubjValues(params, param_labels, q_fun, img_l, img_r, k, n):
     '''
@@ -126,7 +126,7 @@ def estimateSubjValues(params, param_labels, q_fun, img_l, img_r, k, n):
     choice_params = {}
     val_params = {}
     for key, value in zip(param_labels, params):
-        if key in ['w2','w3']:
+        if key in ['beta','lr_bias']:
             choice_params[key] = value
         else:
             val_params[key] = value
@@ -182,53 +182,53 @@ def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='gl
     # select model settings
     if model == 'dv_lin':
         q_fun = dv_lin
-        params_init = {'w1':0.1,'w2':-0.1, 'w3':0.1}
-        bounds = {'w1':(None,None), 'w2':(None,0), 'w3':(None,None)}
+        params_init = {'w1':0.1,'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'w1':(None,None), 'beta':(None,0), 'lr_bias':(None,None)}
 
     elif model == 'dv_hyp':
         q_fun = dv_hyp
-        params_init = {'w1':0.1,'w2':-0.1, 'w3':0.1}
-        bounds = {'w1':(0,None), 'w2':(None,0), 'w3':(None,None)}
+        params_init = {'w1':0.1,'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'w1':(0,None), 'beta':(None,0), 'lr_bias':(None,None)}
 
     elif model == 'dv_exp':
         q_fun = dv_exp
-        params_init = {'w1':0.1, 'w2':-0.1, 'w3':0.1}
-        bounds = {'w1':(None,None), 'w2':(None,0), 'w3':(None,None)}
+        params_init = {'w1':0.1, 'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'w1':(None,None), 'beta':(None,0), 'lr_bias':(None,None)}
 
     elif model == 'ev':
         q_fun = su_mult
-        params_init = {'w2':-0.1, 'w3':0.1}
-        bounds = {'w2':(None,0), 'w3':(None,None)}
+        params_init = {'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'beta':(None,0), 'lr_bias':(None,None)}
 
     elif model == 'ev_add':
         q_fun = su_add
-        params_init = {'beta_p':0.5, 'w2':-0.1, 'w3':0.1}
-        bounds = {'beta_p':(0,1), 'w2':(None,0), 'w3':(None,None)}
+        params_init = {'beta_p':0.5, 'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'beta_p':(0,1), 'beta':(None,0), 'lr_bias':(None,None)}
 
     elif model == 'ev_hybrid':
         q_fun = su_hybrid
-        params_init = {'beta_mult':0.5, 'beta_p':0.5, 'w2':-0.1, 'w3':0.1}
-        bounds = {'beta_mult':(0,1), 'beta_p':(0,1), 'w2':(None,0), 'w3':(None,None)}
+        params_init = {'beta_mult':0.5, 'beta_p':0.5, 'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'beta_mult':(0,1), 'beta_p':(0,1), 'beta':(None,0), 'lr_bias':(None,None)}
 
     elif model == 'su_mult':
         q_fun = su_mult
-        params_init = {'alpha':0.1, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
-        bounds = {'alpha':(0,1), 'gamma':(0,1), 'w2':(None,None), 'w3':(None,None)}
+        params_init = {'alpha':0.1, 'gamma':0.1, 'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'alpha':(0,1), 'gamma':(0,1), 'beta':(None,None), 'lr_bias':(None,None)}
         if not prelec:
             params_init['delta'] = 0.1
             bounds['delta'] = (0,1)
 
     elif model == 'su_add':
         q_fun = su_add
-        params_init = {'alpha':0.1, 'beta_p':0.5, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
-        bounds = {'alpha':(0,1), 'beta_p':(0,1), 'gamma':(0,1), 'w2':(None,None), 'w3':(None,None)}
+        params_init = {'alpha':0.1, 'beta_p':0.5, 'gamma':0.1, 'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'alpha':(0,1), 'beta_p':(0,1), 'gamma':(0,1), 'beta':(None,None), 'lr_bias':(None,None)}
         if not prelec:
             params_init['delta'] = 0.1
             bounds['delta'] = (0,1)
     elif model == 'su_hybrid':
         q_fun = su_hybrid
-        params_init = {'beta_mult':0.5, 'alpha':0.1, 'beta_p':0.5, 'gamma':0.1, 'w2':-0.1, 'w3':0.1}
-        bounds = {'beta_mult':(0,1), 'alpha':(0,1), 'beta_p':(0,1), 'gamma':(0,1), 'w2':(None,None), 'w3':(None,None)}
+        params_init = {'beta_mult':0.5, 'alpha':0.1, 'beta_p':0.5, 'gamma':0.1, 'beta':-0.1, 'lr_bias':0.1}
+        bounds = {'beta_mult':(0,1), 'alpha':(0,1), 'beta_p':(0,1), 'gamma':(0,1), 'beta':(None,None), 'lr_bias':(None,None)}
         if not prelec:
             params_init['delta'] = 0.1
             bounds['delta'] = (0,1)

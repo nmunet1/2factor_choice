@@ -159,7 +159,7 @@ class RescorlaWagnerModel(object):
 
 		return results
 
-	def negLogLikelihood(self, params, param_labels, img_l, img_r, lever, reward):
+	def negLogLikelihood(self, params, param_labels, img_l, img_r, lever, reward, fixed_params={}):
 		'''
 		Calculate negative log-likelihood of choice behavior given model parameters
 		
@@ -167,7 +167,7 @@ class RescorlaWagnerModel(object):
 		param_labels:	(list) parameter labels
 		block: 			(DataFrame) block data
 		'''
-		param_dict = {}
+		param_dict = fixed_params
 		for key, value in zip(param_labels, params):
 			param_dict[key] = value
 
@@ -198,17 +198,27 @@ class RescorlaWagnerModel(object):
 			if min_type == 'local':
 				opt = minimize(self.negLogLikelihood, params, args=(param_labels, *self.data2numpy(block)), \
 					tol=1e-4, bounds=bounds, **kwargs)
+
 				if verbose or not opt.success:
-					print(opt)
+					print(date, 'fitting failed:')
+					print(opt, '\n')
+
+				if opt.success:
+					self.params_fit.loc[date, param_labels] = list(opt.x)
 
 			elif min_type == 'global':
 				opt = basinhopping(self.negLogLikelihood, params, minimizer_kwargs={'method':'L-BFGS-B', \
-					'args':(param_labels, *self.data2numpy(block)), 'tol':1e-4}, disp=verbose)
+					'args':(param_labels, *self.data2numpy(block)), 'tol':1e-4, 'bounds':bounds})
+
+				if verbose or not opt.lowest_optimization_result.success:
+					print(date, 'fitting failed:')
+					print(opt, '\n')
+
+				if opt.lowest_optimization_result.success:
+					self.params_fit.loc[date, param_labels] = list(opt.x)
+
 			else:
 				raise ValueError
-
-			if opt.success:
-				self.params_fit.loc[date, param_labels] = list(opt.x)
 
 		sim_results = self.simulate(data, mode='est', merge_data=True)
 		negLL = -sim_results['log-likelihood'].sum()
@@ -258,155 +268,136 @@ class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 		self.params_init = {'alpha': alpha}
 		self.bounds = {'alpha': (0,1)}
 
-	def negLogLikelihood(self, params, data, param_labels):
+	def fit(self, data, params_init=None, verbose=False, min_type='local', **kwargs):
 		'''
-		Calculate negative log-likelihood of choice behavior given model parameters
-		
-		params:			(sequence) free parameters
+		Fit model free parameters
+
 		data: 			(DataFrame) experimental dataset
-		param_labels: 	(list) parameter labels
+		params_init: 	(dict) initial guess for free parameter values
+		verbose: 		(bool) if True, display optimization results
 		'''
+		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
 		dates = data['date'].unique()
 
-		param_dict = {}
-		for key, value in zip(param_labels, params):
-			param_dict[key] = value
-
 		for date in dates:
-			if not date in self.params_fit.index:
-				fits = fitSubjValues(data, 'ev')[0].iloc[0]
-				self.params_fit.loc[date, ['beta','lr_bias']] = np.array(fits[['w2','w3']])
+			block = data[data['date']==date]
 
-			param_dict['beta'] = self.params_fit.loc[date]['beta']
-			param_dict['lr_bias'] = self.params_fit.loc[date]['lr_bias']
+			if params_init is None:
+				params_init = self.params_init
 
-			sim_results = self.simulate(data, param_dict, sim_choice=False, track_values=False)
+			param_labels = list(params_init.keys())
+			params = [params_init[label] for label in param_labels]
+			bounds = [self.bounds[label] for label in param_labels]
 
-		return -np.log(sim_results['likelihood']).sum()
+			softmax_fits = fitSubjValues(block, model='ev', min_type=min_type)[0].iloc[0][['beta', 'lr_bias']].to_dict()
 
-class LRDecayRescorlaWagnerModel(RescorlaWagnerModel):
-	def __init__(self, tau=0.01, **kwargs):
+			# fit data by minimizing negative log-likelihood of choice behavior given model and parameters
+			if min_type == 'local':
+				opt = minimize(self.negLogLikelihood, params, args=(param_labels, *self.data2numpy(block), softmax_fits), \
+					tol=1e-4, bounds=bounds, **kwargs)
+
+				if verbose or not opt.success:
+					print(date, 'fitting failed:')
+					print(opt, '\n')
+
+				if opt.success:
+					self.params_fit.loc[date, param_labels] = list(opt.x)
+
+			elif min_type == 'global':
+				opt = basinhopping(self.negLogLikelihood, params, minimizer_kwargs={'method':'L-BFGS-B', \
+					'args':(param_labels, *self.data2numpy(block), softmax_fits), 'tol':1e-4, 'bounds':bounds})
+
+				if verbose or not opt.lowest_optimization_result.success:
+					print(date, 'fitting failed:')
+					print(opt, '\n')
+
+				if opt.lowest_optimization_result.success:
+					self.params_fit.loc[date, param_labels] = list(opt.x)
+
+			else:
+				raise ValueError
+
+		sim_results = self.simulate(data, mode='est', merge_data=True)
+		negLL = -sim_results['log-likelihood'].sum()
+		self.aic = 2*len(params)*len(dates) + 2*negLL # Update Akaike Information Criterion
+
+		return sim_results, self.aic
+
+class FSAlphaDecayRWModel(FixedSoftmaxRescorlaWagnerModel):
+	def __init__(self, tau=0.001, **kwargs):
 		super().__init__(**kwargs)
 
 		self.params_init['tau'] = tau
 		self.bounds['tau'] = (0,None)
 		self.params_fit['tau'] = []
 
-	def simulate(self, data, params=None, sim_choice=True, track_values=True, merge_data=False):
+	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, tau=0.001, beta=-0.1, lr_bias=0.1, mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
-		sim_choice: (bool) if True, simulate choices as well as hidden states;
-					if False, simulate hidden states only and calculate likelihood of actual (non-simulated) choices
 		'''
-		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
-		data = data.replace({'if_reward': {np.nan: 0}}) # replace if_reward nan values with 0s
+		values = np.zeros((lever.size,9))
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
 
-		if params is None:
-			set_params = True
-			# params = self.params_fit
-		else:
-			set_params = False
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
 
-		sim_results = pd.DataFrame()
-		if track_values:
-			cols = ['value1','value2','value3','value4','value5','value6','value7','value8','value9','choice']
-		else:
-			cols = ['choice']
-		if sim_choice:
-			cols.append('outcome')
-		else:
-			cols.append('likelihood')
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
 
-		# iterate through valid blocks of each session
-		dates = data['date'].unique()
-		for date in dates:
-			block = data[data['date']==date]
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
 
-			if set_params:
-				try:
-					params = self.params_fit.loc[date].to_dict()
-				except KeyError:
-					params = None
-					raise
+			p_l = softmax(q_l, q_r, beta, lr_bias)
 
-			# initialize state values for block
-			block_sim = np.full((block.shape[0],len(cols)), np.nan)
-			values = np.zeros(9)
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii]) # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])
 
-			if not params is None:
-				for ii in range(block_sim.shape[0]):
-					trial = block.iloc[ii] # trial data
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen-1] * reward[ii]
+				else:
+					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
 
-					if track_values:
-						block_sim[ii, :9] = values # record values at start of trial
+				result[ii,:] = [choice, outcome]
 
-					idx_l = trial['left_image'] - 1
-					if not np.isnan(idx_l):
-						idx_l = int(idx_l)
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])
+				
+				outcome = amnt_map[chosen-1] * reward[ii]
 
-					idx_r = trial['right_image'] - 1
-					if not np.isnan(idx_r):
-						idx_r = int(idx_r)
+			# value update
+			if ii+1 < lever.size:
+				alpha_dis = alpha*np.exp(-tau*ii)
+				values[ii+1,:] = values[ii,:]
+				values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_dis, outcome)
 
-					# simulated probability of choosing left
-					if (not np.isnan(idx_l)) and (not np.isnan(idx_r)):
-						p_l = softmax(values[idx_l], values[idx_r], params['beta'], params['lr_bias'])
-					elif sim_choice:
-						p_l = float(np.isnan(idx_r))
-					else:
-						p_l = np.nan
+		return result, values
 
-					if sim_choice:
-						# simulate choice and reward outcome
-						if stats.bernoulli.rvs(p_l):
-							choice = -1
-							chosen = idx_l # chosen image index
-							p_rwd = self.levels2prob[trial['left_prob_level']] # probability of reward
-							amnt_rwd = self.levels2amnt[trial['left_amnt_level']] # amount of reward
-						else:
-							choice = 1
-							chosen = idx_r
-							p_rwd = self.levels2prob[trial['right_prob_level']]
-							amnt_rwd = self.levels2amnt[trial['right_amnt_level']]
-
-						if trial['lever'] == choice:
-							outcome = amnt_rwd * trial['if_reward']
-						else:
-							outcome = amnt_rwd * stats.bernoulli.rvs(p_rwd)
-
-						block_sim[ii, -2] = choice # record choice
-						block_sim[ii, -1] = outcome # record outcome
-
-					else:
-						# compute single-trial choice likelihood
-						block_sim[ii, -2] = trial['lever']
-
-						if trial['lever'] == -1:
-							block_sim[ii, -1] = p_l # likelihood of left choice, assuming Bernoulli Distribution
-							chosen = idx_l # chosen image index
-							outcome = self.levels2amnt[trial['left_amnt_level']] * trial['if_reward']
-						elif trial['lever'] == 1:
-							block_sim[ii, -1] = 1 - p_l # likelihood of right choice, assuming Bernoulli Distribution
-							chosen = idx_r
-							outcome = self.levels2amnt[trial['right_amnt_level']] * trial['if_reward']
-
-					alpha = params['alpha']*np.exp(-params['tau']*ii)
-					if alpha < 1e-3:
-						alpha = 0
-					values[chosen] = self.learningRule(values[chosen], alpha, outcome) # value update
-
-			block_sim = pd.DataFrame(block_sim, index=block.index, columns=cols)
-			sim_results = sim_results.append(block_sim)
-
-		if merge_data:
-			sim_results = pd.concat([data, sim_results], axis=1, sort=False)
-
-		return sim_results
-
-class WinStayLoseShiftRescorlaWagnerModel(RescorlaWagnerModel):
+class FSWinStayLoseShiftRWModel(FixedSoftmaxRescorlaWagnerModel):
 	def __init__(self, wsls_bias=0.1, **kwargs):
 		super().__init__(**kwargs)
 
@@ -414,116 +405,152 @@ class WinStayLoseShiftRescorlaWagnerModel(RescorlaWagnerModel):
 		self.bounds['wsls_bias'] = (0,None)
 		self.params_fit['wsls_bias'] = []
 
-	def simulate(self, data, params=None, sim_choice=True, track_values=True, merge_data=False):
+	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, beta=-0.1, lr_bias=0.1, wsls_bias=0.1, mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
-		sim_choice: (bool) if True, simulate choices as well as hidden states;
-					if False, simulate hidden states only and calculate likelihood of actual (non-simulated) choices
 		'''
-		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
-		data = data.replace({'if_reward': {np.nan: 0}}) # replace if_reward nan values with 0s
+		values = np.zeros((lever.size,9))
+		last_outcome = np.ones(9)*0.5
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
 
-		if params is None:
-			set_params = True
-			# params = self.params_fit
-		else:
-			set_params = False
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
 
-		sim_results = pd.DataFrame()
-		if track_values:
-			cols = ['value1','value2','value3','value4','value5','value6','value7','value8','value9','choice']
-		else:
-			cols = ['choice']
-		if sim_choice:
-			cols.append('outcome')
-		else:
-			cols.append('likelihood')
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
 
-		# iterate through valid blocks of each session
-		dates = data['date'].unique()
-		for date in dates:
-			block = data[data['date']==date]
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
 
-			if set_params:
-				try:
-					params = self.params_fit.loc[date].to_dict()
-				except KeyError:
-					params = None
-					raise
+			bias = lr_bias
+			if not (np.isnan(img_l[ii]) or np.isnan(img_r[ii])):
+				if last_outcome[int(img_l[ii])-1] > last_outcome[int(img_r[ii])-1]:
+					bias -= wsls_bias
+				elif last_outcome[int(img_l[ii])-1] < last_outcome[int(img_r[ii])-1]:
+					bias += wsls_bias
 
-			# initialize state values for block
-			block_sim = np.full((block.shape[0],len(cols)), np.nan)
-			values = np.zeros(9)
-			last_outcome = np.zeros(9)
+			p_l = softmax(q_l, q_r, beta, bias)
 
-			if not params is None:
-				for ii in range(block_sim.shape[0]):
-					trial = block.iloc[ii] # trial data
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii]) # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])
 
-					if track_values:
-						block_sim[ii, :9] = values # record values at start of trial
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen-1] * reward[ii]
+				else:
+					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
 
-					idx_l = trial['left_image'] - 1
-					if not np.isnan(idx_l):
-						idx_l = int(idx_l)
+				result[ii,:] = [choice, outcome]
 
-					idx_r = trial['right_image'] - 1
-					if not np.isnan(idx_r):
-						idx_r = int(idx_r)
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])
+				
+				outcome = amnt_map[chosen-1] * reward[ii]
 
-					# simulated probability of choosing left
-					if (not np.isnan(idx_l)) and (not np.isnan(idx_r)):
-						bias = params['lr_bias'] + params['wsls_bias'] * (last_outcome[idx_l] - last_outcome[idx_r])
-						p_l = softmax(values[idx_l], values[idx_r], params['beta'], bias)
-					elif sim_choice:
-						p_l = float(np.isnan(idx_r))
-					else:
-						p_l = np.nan
+			# value update
+			if ii+1 < lever.size:
+				values[ii+1,:] = values[ii,:]
+				values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha, outcome)
+				last_outcome[chosen-1] = outcome > 0
 
-					if sim_choice:
-						# simulate choice and reward outcome
-						if stats.bernoulli.rvs(p_l):
-							choice = -1
-							chosen = idx_l # chosen image index
-							p_rwd = self.levels2prob[trial['left_prob_level']] # probability of reward
-							amnt_rwd = self.levels2amnt[trial['left_amnt_level']] # amount of reward
-						else:
-							choice = 1
-							chosen = idx_r
-							p_rwd = self.levels2prob[trial['right_prob_level']]
-							amnt_rwd = self.levels2amnt[trial['right_amnt_level']]
+		return result, values
 
-						if trial['lever'] == choice:
-							outcome = amnt_rwd * trial['if_reward']
-						else:
-							outcome = amnt_rwd * stats.bernoulli.rvs(p_rwd)
+class FSAlphaFixedAlphaForcedRWModel(FixedSoftmaxRescorlaWagnerModel):
+	def __init__(self, alpha_fixed=0.01, alpha_forced=0.01, **kwargs):
+		super().__init__(**kwargs)
 
-						block_sim[ii, -2] = choice # record choice
-						block_sim[ii, -1] = outcome # record outcome
+		self.params_init = {'alpha_fixed': alpha_fixed, 'alpha_forced': alpha_forced}
+		self.bounds = {'alpha_fixed': (0,1), 'alpha_forced': (0,1)}
+		self.params_fit = pd.DataFrame(columns=['alpha_fixed','alpha_forced','beta','lr_bias'])
 
-					else:
-						# compute single-trial choice likelihood
-						block_sim[ii, -2] = trial['lever']
+	def simSess(self, img_l, img_r, lever, reward, alpha_fixed=0.01, alpha_forced=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
 
-						if trial['lever'] == -1:
-							block_sim[ii, -1] = p_l # likelihood of left choice, assuming Bernoulli Distribution
-							chosen = idx_l # chosen image index
-							outcome = self.levels2amnt[trial['left_amnt_level']] * trial['if_reward']
-						elif trial['lever'] == 1:
-							block_sim[ii, -1] = 1 - p_l # likelihood of right choice, assuming Bernoulli Distribution
-							chosen = idx_r
-							outcome = self.levels2amnt[trial['right_amnt_level']] * trial['if_reward']
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
 
-					values[chosen] = self.learningRule(values[chosen], params['alpha'], outcome) # value update
-					last_outcome[chosen] = outcome > 0
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
 
-			block_sim = pd.DataFrame(block_sim, index=block.index, columns=cols)
-			sim_results = sim_results.append(block_sim)
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
 
-		if merge_data:
-			sim_results = pd.concat([data, sim_results], axis=1, sort=False)
+			p_l = softmax(q_l, q_r, beta, lr_bias)
 
-		return sim_results
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii]) # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen-1] * reward[ii]
+				else:
+					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])
+				
+				outcome = amnt_map[chosen-1] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				values[ii+1,:] = values[ii,:]
+				if np.isnan(img_l[ii]) or np.isnan(img_r[ii]):
+					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_forced, outcome)
+				else:
+					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_fixed, outcome)
+
+		return result, values
