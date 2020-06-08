@@ -4,6 +4,7 @@ import pandas as pd
 from scipy import stats
 from scipy.optimize import minimize, basinhopping
 import seaborn as sns
+import time
 
 import bhv_analysis as bhv
 from bhv_model import softmax, fitSubjValues
@@ -181,6 +182,7 @@ class RescorlaWagnerModel(object):
 		params_init: 	(dict) initial guess for free parameter values
 		verbose: 		(bool) if True, display optimization results
 		'''
+		t0 = time.time()
 		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
 		dates = data['date'].unique()
 
@@ -216,7 +218,7 @@ class RescorlaWagnerModel(object):
 
 				if opt.lowest_optimization_result.success:
 					self.params_fit.loc[date, param_labels] = list(opt.x)
-
+					
 			else:
 				raise ValueError
 
@@ -224,7 +226,9 @@ class RescorlaWagnerModel(object):
 		negLL = -sim_results['log-likelihood'].sum()
 		self.aic = 2*len(params)*len(dates) + 2*negLL # Update Akaike Information Criterion
 
-		return sim_results, self.aic
+		print('Fit time:', time.time()-t0)
+
+		return sim_results, self.aic, opt
 
 	def save(self, fname):
 		pass
