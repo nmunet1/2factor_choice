@@ -26,7 +26,6 @@ class RescorlaWagnerModel(object):
 		self.params_fit = pd.DataFrame(columns=['alpha','beta','lr_bias'])
 
 		self.aic = None # Akaike Information Criterion of best fit model
-		self.sims = None # Simulation results from bootstrapped simulations
 
 		self.levels2prob = {1: 0.7, 2: 0.4, 3: 0.1} # conversion from probability levels to probabilities of reward
 		self.levels2amnt = {1: 0.5, 2: 0.3, 3: 0.1} # conversion from amount levels to reward amounts in L
@@ -146,15 +145,15 @@ class RescorlaWagnerModel(object):
 
 	def bootstrap(self, data, n_iter=100, merge_data=True, verbose=False):
 		if merge_data:
-			results = data.copy()
+			results = data[bhv.isvalid(data, forced=True, sets='new')]
 		else:
 			results = pd.DataFrame()
 
 		for n in range(n_iter):
 			if n % 10 == 0 and verbose:
 				print('simulation', n)
-			res_n = self.simulate(data, mode='sim', merge_data=True)
-			res_n['sim'] = n
+			res_n = self.simulate(data, mode='sim', merge_data=False)
+			# res_n['sim'] = n
 			results = pd.concat([results, res_n], axis=1)
 		self.sim_results = results
 
@@ -218,7 +217,7 @@ class RescorlaWagnerModel(object):
 
 				if opt.lowest_optimization_result.success:
 					self.params_fit.loc[date, param_labels] = list(opt.x)
-					
+
 			else:
 				raise ValueError
 
@@ -294,6 +293,8 @@ class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 			bounds = [self.bounds[label] for label in param_labels]
 
 			softmax_fits = fitSubjValues(block, model='ev', min_type=min_type)[0].iloc[0][['beta', 'lr_bias']].to_dict()
+			self.params_fit.loc[date, 'beta'] = softmax_fits['beta']
+			self.params_fit.loc[date, 'lr_bias'] = softmax_fits['lr_bias']
 
 			# fit data by minimizing negative log-likelihood of choice behavior given model and parameters
 			if min_type == 'local':
@@ -327,13 +328,13 @@ class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 
 		return sim_results, self.aic
 
-class FSAlphaDecayRWModel(FixedSoftmaxRescorlaWagnerModel):
+class AlphaDecayRWModel(RescorlaWagnerModel):
 	def __init__(self, tau=0.001, **kwargs):
 		super().__init__(**kwargs)
 
 		self.params_init['tau'] = tau
 		self.bounds['tau'] = (0,None)
-		self.params_fit['tau'] = []
+		self.params_fit['tau'] = np.nan
 
 	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, tau=0.001, beta=-0.1, lr_bias=0.1, mode='sim'):
 		'''
@@ -401,13 +402,13 @@ class FSAlphaDecayRWModel(FixedSoftmaxRescorlaWagnerModel):
 
 		return result, values
 
-class FSWinStayLoseShiftRWModel(FixedSoftmaxRescorlaWagnerModel):
+class WinStayLoseShiftRWModel(RescorlaWagnerModel):
 	def __init__(self, wsls_bias=0.1, **kwargs):
 		super().__init__(**kwargs)
 
 		self.params_init['wsls_bias'] = wsls_bias
 		self.bounds['wsls_bias'] = (0,None)
-		self.params_fit['wsls_bias'] = []
+		self.params_fit['wsls_bias'] = np.nan
 
 	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, beta=-0.1, lr_bias=0.1, wsls_bias=0.1, mode='sim'):
 		'''
@@ -483,13 +484,19 @@ class FSWinStayLoseShiftRWModel(FixedSoftmaxRescorlaWagnerModel):
 
 		return result, values
 
-class FSAlphaFixedAlphaForcedRWModel(FixedSoftmaxRescorlaWagnerModel):
+class AlphaFixedAlphaForcedRWModel(RescorlaWagnerModel):
 	def __init__(self, alpha_fixed=0.01, alpha_forced=0.01, **kwargs):
 		super().__init__(**kwargs)
 
-		self.params_init = {'alpha_fixed': alpha_fixed, 'alpha_forced': alpha_forced}
-		self.bounds = {'alpha_fixed': (0,1), 'alpha_forced': (0,1)}
-		self.params_fit = pd.DataFrame(columns=['alpha_fixed','alpha_forced','beta','lr_bias'])
+		del self.params_init['alpha']
+		self.params_init.update({'alpha_fixed': alpha_fixed, 'alpha_forced': alpha_forced, 'beta':})
+
+		del self.bounds['alpha']
+		self.bounds.update({'alpha_fixed': (0,1), 'alpha_forced': (0,1)})
+
+		self.params_fit = self.params_fit.drop('alpha',1)
+		self.params_fit['alpha_fixed'] = np.nan
+		self.params_fit['alpha_forced'] = np.nan
 
 	def simSess(self, img_l, img_r, lever, reward, alpha_fixed=0.01, alpha_forced=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
 		'''

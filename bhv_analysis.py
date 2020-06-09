@@ -8,12 +8,14 @@ from scipy.io import loadmat
 import seaborn as sns
 import bhv_model
 
-def loadData():
+def loadData(filt_sess=True):
     '''
     Reads .mat files containing single-session data into a multi-session pandas DataFrame
     '''
     root = './Data'
     folders = ['bhv_allB','bhv_ABA'] # folders containing data for different session structures
+    excluded_dates = ['2019-08-02','2019-08-15','2019-08-18','2019-08-20','2019-08-23','2019-08-25','2019-08-27', \
+        '2019-08-29','2019-09-02','2019-09-05','2019-11-19']
     
     data = pd.DataFrame()
     
@@ -23,28 +25,28 @@ def loadData():
             for entry in it:
                 if entry.name.endswith('.mat') and entry.is_file():
                     date = entry.name[-25:-15] # get session date from file name
-                    
-                    # session type: ABA or B (image set structure)
-                    sess_type = np.nan
-                    if folder == 'bhv_allB':
-                        sess_type = 'B'
-                    elif folder == 'bhv_ABA':
-                        sess_type = 'ABA'
+                    if not filt_sess or not date in excluded_dates:
+                        # session type: ABA or B (image set structure)
+                        sess_type = np.nan
+                        if folder == 'bhv_allB':
+                            sess_type = 'B'
+                        elif folder == 'bhv_ABA':
+                            sess_type = 'ABA'
+                            
+                        mat_data = loadmat(entry.path) # dictionary of all data values and labels
+
+                        # start with behavioral timeseries data and labels
+                        bhv_labels = [h[0] for h in mat_data['bhv_headers'].flatten()]
+                        sess_data = pd.DataFrame(mat_data['bhv_info'],columns=bhv_labels)
+
+                        sess_data.insert(0,'date',date) # add session date
+                        sess_data.insert(1,'sesstype',sess_type) # add session type
+
+                        # add fitted free parameters from discounted value and choice functions
+                        for w_name, w_fit in zip(mat_data['w_names'].flatten(), mat_data['w_fit'].flatten()):
+                            sess_data.insert(sess_data.shape[1], w_name[0][:2], w_fit)
                         
-                    mat_data = loadmat(entry.path) # dictionary of all data values and labels
-
-                    # start with behavioral timeseries data and labels
-                    bhv_labels = [h[0] for h in mat_data['bhv_headers'].flatten()]
-                    sess_data = pd.DataFrame(mat_data['bhv_info'],columns=bhv_labels)
-
-                    sess_data.insert(0,'date',date) # add session date
-                    sess_data.insert(1,'sesstype',sess_type) # add session type
-
-                    # add fitted free parameters from discounted value and choice functions
-                    for w_name, w_fit in zip(mat_data['w_names'].flatten(), mat_data['w_fit'].flatten()):
-                        sess_data.insert(sess_data.shape[1], w_name[0][:2], w_fit)
-                    
-                    data = pd.concat([data,sess_data],ignore_index=True) # join session data with master dataset
+                        data = pd.concat([data,sess_data],ignore_index=True) # join session data with master dataset
                     
     return data
 
@@ -102,7 +104,7 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
         if output == 'perf':
             ts = (ts == block['lever']).replace({True:1, False:0})
         else:
-            ts = block['choice'].replace({True:1, False:0}).apply(lambda x: x == ts)
+            ts = block['sim_choice'].replace({True:1, False:0}).apply(lambda x: x == ts)
 
     elif output == 'model_accuracy':
         ts = block['choice'].apply(lambda x: x == block['lever'])
@@ -176,34 +178,29 @@ def choiceMat(data, compare='lr', sesstype=None, win_size=200, start=None, end='
         n = np.zeros((9,9))
 
         # iterate through all contingency pairs and calculate confusions
-        for l_prob in range(3):
-            for l_amnt in range(3):
-                for r_prob in range(3):
-                    for r_amnt in range(3):
-                        pair = data[(data['left_prob_level']==(l_prob+1)) & \
-                                (data['left_amnt_level']==(l_amnt+1)) & \
-                                (data['right_prob_level']==(r_prob+1)) & \
-                                (data['right_amnt_level']==(r_amnt+1))]
-                        
-                        if compare in ['ab','lr']:
-                            l_over_r = pair['lever'].replace({1:0}).replace({-1:1}).sum()
-                        elif compare in ['lr_sim']:
-                            l_over_r = pair['choice'].replace({1:0}).replace({-1:1}).sum()
-                        elif compare == 'lr_diff':
-                            lr_value_diff = pair['left_fit_value'].mean() - pair['right_fit_value'].mean()
-                        total = pair['lever'].count()
-                        
-                        if compare in ['ab','lr','lr_sim']:
-                            choice_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += l_over_r
-                            n[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += total
-                        elif compare == 'lr_diff':
-                            choice_mat[(r_prob*3)+r_amnt, (l_prob*3)+l_amnt] += lr_value_diff
-                        else:
-                            raise ValueError
-                        
-                        if compare=='ab':
-                            choice_mat[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total - l_over_r
-                            n[(l_prob*3)+l_amnt, (r_prob*3)+r_amnt] += total
+        for img_l in range(1,10):
+            for img_r in range(1,10):
+                pair = data[(data['left_image']==img_l) & (data['right_image']==img_r)]
+                
+                if compare in ['ab','lr']:
+                    l_over_r = pair['lever'].replace({1:0}).replace({-1:1}).sum()
+                elif compare in ['lr_sim']:
+                    l_over_r = pair['choice'].replace({1:0}).replace({-1:1}).sum()
+                elif compare == 'lr_diff':
+                    lr_value_diff = pair['left_fit_value'].mean() - pair['right_fit_value'].mean()
+                total = pair['lever'].count()
+                
+                if compare in ['ab','lr','lr_sim']:
+                    choice_mat[img_r-1, img_l-1] += l_over_r
+                    n[img_r-1, img_l-1] += total
+                elif compare == 'lr_diff':
+                    choice_mat[img_r-1, img_l-1] += lr_value_diff
+                else:
+                    raise ValueError
+                
+                if compare=='ab':
+                    choice_mat[img_l-1, img_r-1] += total - l_over_r
+                    n[img_l-1, img_r-1] += total
 
         if compare in ['ab','lr','lr_sim']:
             n[n==0]=np.nan
