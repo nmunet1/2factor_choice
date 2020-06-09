@@ -628,11 +628,93 @@ class AlphaAmountRWModel(RescorlaWagnerModel):
 			# value update
 			if ii+1 < lever.size:
 				values[ii+1,:] = values[ii,:]
-				if chosen % 3 == 1
+				if chosen % 3 == 1:
 					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_high, outcome)
 				elif chosen % 3 == 2:
 					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_med, outcome)
 				elif chosen % 3 == 0:
 					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_low, outcome)
+
+		return result, values
+
+class AlphaOutcomeRWModel(RescorlaWagnerModel):
+	def __init__(self, alpha_fixed=0.01, alpha_forced=0.01, **kwargs):
+		super().__init__(**kwargs)
+
+		del self.params_init['alpha']
+		self.params_init.update({'alpha_win': alpha_win, 'alpha_lose': alpha_lose})
+
+		del self.bounds['alpha']
+		self.bounds.update({'alpha_win': (0,1), 'alpha_lose': (0,1)})
+
+		self.params_fit = self.params_fit.drop('alpha',1)
+		self.params_fit['alpha_win'] = np.nan
+		self.params_fit['alpha_lose'] = np.nan
+
+	def simSess(self, img_l, img_r, lever, reward, alpha_win=0.01, alpha_lose=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
+
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
+
+			p_l = softmax(q_l, q_r, beta, lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii]) # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen-1] * reward[ii]
+				else:
+					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])
+				
+				outcome = amnt_map[chosen-1] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				values[ii+1,:] = values[ii,:]
+				if outcome == 0:
+					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_lose, outcome)
+				else:
+					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_win, outcome)
 
 		return result, values
