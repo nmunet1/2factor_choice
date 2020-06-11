@@ -108,7 +108,7 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
             ts = block['sim_choice'].replace({True:1, False:0}).apply(lambda x: x == ts)
 
     elif output == 'model_accuracy':
-        ts = block['choice'].apply(lambda x: x == block['lever'])
+        ts = block['sim_choice'].apply(lambda x: x == block['lever'])
 
     elif output == 'rt':
         ts = block['rt']
@@ -259,16 +259,16 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
 
     # series 1 plot settings
     if series1 == 'perf':
-        ylabel1 = 'P(high > low)'
-        ylim1 = [.4, 1.01]
+        ylabel1 = 'P(optimal)'
+        ylim1 = [0.4, 1.01]
         colors1 = ['blue', 'crimson']
     elif series1 == 'model':
-        ylabel1 = 'P(high > low)'
-        ylim1 = [.4, 1.01]
+        ylabel1 = 'P(optimal)'
+        ylim1 = [0.4, 1.01]
         colors1 = ['red','red']
     elif series1 == 'model_accuracy':
         ylabel1 = '% Correct'
-        ylim1 = [0, 1]
+        ylim1 = [0.4, 1.01]
         colors1 = ['blue','blue']
     elif series1 == 'rt':
         ylabel1 = 'Reaction Time (ms)'

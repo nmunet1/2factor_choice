@@ -26,6 +26,7 @@ class RescorlaWagnerModel(object):
 		self.params_fit = pd.DataFrame(columns=['alpha','beta','lr_bias'])
 
 		self.aic = None # Akaike Information Criterion of best fit model
+		self.sim_results = None
 
 		self.levels2prob = {1: 0.7, 2: 0.4, 3: 0.1} # conversion from probability levels to probabilities of reward
 		self.levels2amnt = {1: 0.5, 2: 0.3, 3: 0.1} # conversion from amount levels to reward amounts in L
@@ -226,29 +227,29 @@ class RescorlaWagnerModel(object):
 
 		return sim_results, self.aic
 
-	def plotValueDiff(self, data, date, redo_sim=False, n_iter=100):
-		if redo_sim or (self.sims is None or not any(self.sims['date']==date)):
-			self.sims = self.bootstrap(data, n_iter=n_iter)
-		sess_sims = self.sims[self.sims['date']==date]
+	def plotValueDiff(self, data, date, redo_sim=False, **kwargs):
+		# if redo_sim or (self.sim_results is None or not any(self.sim_results['date']==date)):
+		# 	self.sim_results = self.bootstrap(data, **kwargs)
+		sess_sims = self.sim_results[self.sim_results['date']==date]
 
-		colors = ['blue','blue','blue','grey','grey','grey','red','red','red']
-		ls = ['-','--',':','-','--',':','-','--',':']
-
+		colors = ['blue','grey','red','blue','grey','red','blue','grey','red']
 
 		sess_data = data[data['date']==date]
-		est = self.simulate(sess_data, sim_choice=False)
+		est = self.simulate(sess_data, mode='est')
 
-		for img_i in range(1,10):
-			value_diff = sess_sims['value%i' % img_i]
-			value_diff = value_diff.apply(lambda x: est['value%i' % img_i] - x)
-			orig_size = value_diff.shape
+		for img_set in [[1,2,3],[4,5,6],[7,8,9]]:
+			plt.figure()
+			for img_i in img_set:
+				value_diff = sess_sims['value%i' % img_i]
+				value_diff = value_diff.apply(lambda x: est['value%i' % img_i] - x)
+				orig_size = value_diff.shape
 
-			value_diff = value_diff.to_numpy().T.reshape(np.prod(orig_size))
-			trials = np.tile(np.arange(orig_size[0])+1, orig_size[1])
+				value_diff = value_diff.to_numpy().T.reshape(np.prod(orig_size))
+				trials = np.tile(np.arange(orig_size[0])+1, orig_size[1])
 
-			sns.lineplot(trials, value_diff, color=colors[img_i-1], ls=ls[img_i-1])
-		plt.xlabel('Trial')
-		plt.ylabel('Estimated Value - Simulation Value')
+				sns.lineplot(trials, value_diff, color=colors[img_i-1])
+			plt.xlabel('Trial')
+			plt.ylabel('Estimated Value - Simulation Value')
 
 class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 	def __init__(self, alpha=0.01):
@@ -470,6 +471,97 @@ class WinStayLoseShiftRWModel(RescorlaWagnerModel):
 
 		return result, values
 
+class ChoiceKernelRWModel(RescorlaWagnerModel):
+	def __init__(self, alpha_choice=0.01, choice_bias=0.1, **kwargs):
+		super().__init__(**kwargs)
+
+		self.params_init.update({'alpha_choice': alpha_choice, 'choice_bias': choice_bias})
+		self.bounds['alpha_choice'] = (0,1)
+		self.bounds['choice_bias'] = (0,None)
+		self.params_fit['alpha_choice'] = np.nan
+		self.params_fit['choice_bias'] = np.nan
+
+	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, beta=-0.1, lr_bias=0.1, alpha_choice=0.01, choice_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		choice_kernel = np.zeros(9)
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				idx_l = None
+				q_l = -np.inf
+				c_l = -np.inf
+			else:
+				idx_l = int(img_l[ii])-1
+				q_l = values[ii, idx_l]
+				c_l = choice_kernel[idx_l]
+
+			if np.isnan(img_r[ii]):
+				idx_r = None
+				q_r = -np.inf
+				c_r = -np.inf
+			else:
+				idx_r = int(img_r[ii])-1
+				q_r = values[ii, idx_r]
+				c_r = choice_kernel[idx_r]
+
+			p_l = softmax(q_l, q_r, beta, c_r-c_l)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = idx_l # chosen image index
+					unchosen = idx_r
+				else:
+					choice = 1
+					chosen = idx_l
+					unchosen = idx_r
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen] * reward[ii]
+				else:
+					outcome = amnt_map[chosen] * stats.bernoulli.rvs(prob_map[chosen])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = idx_l
+					unchosen = idx_r
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = idx_r
+					unchosen = idx_l
+				
+				outcome = amnt_map[chosen] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				values[ii+1,:] = values[ii,:]
+				values[ii+1, chosen] = self.learningRule(values[ii+1, chosen], alpha, outcome)
+				choice_kernel[chosen] = self.learningRule(choice_kernel[chosen], alpha_choice, choice_bias)
+				if not unchosen is None:
+					choice_kernel[unchosen] = self.learningRule(choice_kernel[unchosen], alpha_choice, 0)
+
+		return result, values
+
 class AlphaFixedAlphaForcedRWModel(RescorlaWagnerModel):
 	def __init__(self, alpha_fixed=0.01, alpha_forced=0.01, **kwargs):
 		super().__init__(**kwargs)
@@ -638,7 +730,7 @@ class AlphaAmountRWModel(RescorlaWagnerModel):
 		return result, values
 
 class AlphaOutcomeRWModel(RescorlaWagnerModel):
-	def __init__(self, alpha_fixed=0.01, alpha_forced=0.01, **kwargs):
+	def __init__(self, alpha_win=0.01, alpha_lose=0.01, **kwargs):
 		super().__init__(**kwargs)
 
 		del self.params_init['alpha']
