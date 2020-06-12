@@ -93,7 +93,7 @@ class RescorlaWagnerModel(object):
 			result = np.zeros((lever.size,1)) # log-likelihoods
 
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		err_ct = 0
 		for ii in range(lever.size):
@@ -279,7 +279,7 @@ class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 			params = [params_init[label] for label in param_labels]
 			bounds = [self.bounds[label] for label in param_labels]
 
-			softmax_fits = fitSubjValues(block, model='ev', min_type=min_type)[0].iloc[0][['beta', 'lr_bias']].to_dict()
+			softmax_fits = fitSubjValues(block, model='ev', min_type=min_type).loc[date].to_dict()
 			self.params_fit.loc[date, 'beta'] = softmax_fits['beta']
 			self.params_fit.loc[date, 'lr_bias'] = softmax_fits['lr_bias']
 

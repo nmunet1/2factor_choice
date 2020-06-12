@@ -118,10 +118,10 @@ def estimateSubjValues(params, param_labels, q_fun, img_l, img_r, k, n):
     params:         (list) free parameter values
     param_labels:   (list) free parameter labels
     '''
-    amnt_l = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])[img_l.astype(int)-1]
-    amnt_r = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])[img_r.astype(int)-1]
-    prob_l = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])[img_l.astype(int)-1]
-    prob_r = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])[img_r.astype(int)-1]
+    amnt_l = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])[img_l.astype(int)-1]
+    amnt_r = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])[img_r.astype(int)-1]
+    prob_l = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])[img_l.astype(int)-1]
+    prob_r = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])[img_r.astype(int)-1]
 
     choice_params = {}
     val_params = {}
@@ -235,7 +235,10 @@ def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='gl
     else:
         raise ValueError
 
-    fits = pd.DataFrame() # fitted parameters, estimated subjective values, and relevant data
+    # fitted parameters, estimated subjective values, and relevant data
+    fits = pd.DataFrame(columns=['value1','value2','value3','value4','value5','value6',\
+        'value7', 'value8','value9','beta','lr_bias'])
+    ll = 0
 
     dates = data['date'].unique()
     for date in dates:
@@ -258,10 +261,16 @@ def fitSubjValues(data, model='dv_lin', prelec=True, verbose=False, min_type='gl
         else:
             raise ValueError
 
-        sess_fits = estimateSubjValues(opt.x, param_labels, q_fun, *data2numpy(sess_data))
-        sess_fits['date'] = date
-        fits = pd.concat([fits, pd.DataFrame(sess_fits)])
+        sess_est = estimateSubjValues(opt.x, param_labels, q_fun, *data2numpy(sess_data))
+        sess_fits = np.zeros(11)
+        for ii in range(9):
+            sess_fits[ii] = sess_est['left_fit_value'][sess_est['left_image']==ii+1][0]
+        sess_fits[9] = sess_est['beta']
+        sess_fits[10] = sess_est['lr_bias']
 
-    aic = 2*len(params)*len(dates) - 2*fits['log-likelihood'].sum()
+        fits.loc[date] = sess_fits
+        ll += sess_est['log-likelihood'].sum()
+
+    aic = 2*len(params)*len(dates) - 2*ll
 
     return fits, aic

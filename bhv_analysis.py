@@ -185,14 +185,21 @@ def choiceMat(data, compare='lr', sesstype=None, win_size=200, start=None, end='
                 
                 if compare in ['ab','lr']:
                     l_over_r = pair['lever'].replace({1:0}).replace({-1:1}).sum()
+                    # total = pair['lever'].count()
                 elif compare in ['lr_sim']:
-                    l_over_r = pair['choice'].replace({1:0}).replace({-1:1}).sum()
+                    l_over_r = pair['sim_choice'].replace({1:0}).replace({-1:1}).mean(axis=1).sum()
+                    # total = pair['sim_choice'].count()
+                elif compare in ['acc_sim']:
+                    acc = pair['sim_choice'].apply(lambda x: x == pair['lever']).mean(axis=1).sum()
                 elif compare == 'lr_diff':
                     lr_value_diff = pair['left_fit_value'].mean() - pair['right_fit_value'].mean()
                 total = pair['lever'].count()
                 
                 if compare in ['ab','lr','lr_sim']:
                     choice_mat[img_r-1, img_l-1] += l_over_r
+                    n[img_r-1, img_l-1] += total
+                elif compare == 'acc_sim':
+                    choice_mat[img_r-1, img_l-1] += acc
                     n[img_r-1, img_l-1] += total
                 elif compare == 'lr_diff':
                     choice_mat[img_r-1, img_l-1] += lr_value_diff
@@ -203,7 +210,7 @@ def choiceMat(data, compare='lr', sesstype=None, win_size=200, start=None, end='
                     choice_mat[img_l-1, img_r-1] += total - l_over_r
                     n[img_l-1, img_r-1] += total
 
-        if compare in ['ab','lr','lr_sim']:
+        if compare in ['ab','lr','lr_sim','acc_sim']:
             n[n==0]=np.nan
             choice_mat = choice_mat / n
 
@@ -426,6 +433,10 @@ def plotChoiceMat(data, compare='lr', sesstype=None, win_size=200, start=200, en
         cbar_label = 'Simulated P(left > right)'
         vmin = 0
         vmax = 1
+    elif compare == 'acc_sim':
+        cbar_label = 'Simulation Accuracy'
+        vmin = 0
+        vmax = 1
     
     # plot heatmap and subdividing gridlines
     sns.heatmap(np.round(choice_mat,2), vmin=vmin, vmax=vmax, cmap='plasma', annot=annot, cbar_kws={'label': cbar_label})
@@ -435,7 +446,7 @@ def plotChoiceMat(data, compare='lr', sesstype=None, win_size=200, start=200, en
     plt.axhline(6,color='w', lw=2)
     
     # add axis labels
-    if compare in ['lr','lr_diff','lr_model','lr_sim']:
+    if compare in ['lr','lr_diff','lr_model','lr_sim','acc_sim']:
         plt.xlabel('Left Image')
         plt.ylabel('Right Image')
     elif compare == 'ab':
