@@ -337,7 +337,7 @@ class AlphaDecayRWModel(RescorlaWagnerModel):
 			result = np.zeros((lever.size,1)) # log-likelihoods
 
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		err_ct = 0
 		for ii in range(lever.size):
@@ -412,7 +412,7 @@ class WinStayLoseShiftRWModel(RescorlaWagnerModel):
 			result = np.zeros((lever.size,1)) # log-likelihoods
 
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		err_ct = 0
 		for ii in range(lever.size):
@@ -590,7 +590,7 @@ class AlphaFixedAlphaForcedRWModel(RescorlaWagnerModel):
 			result = np.zeros((lever.size,1)) # log-likelihoods
 
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		err_ct = 0
 		for ii in range(lever.size):
@@ -673,7 +673,7 @@ class AlphaAmountRWModel(RescorlaWagnerModel):
 			result = np.zeros((lever.size,1)) # log-likelihoods
 
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		err_ct = 0
 		for ii in range(lever.size):
@@ -757,7 +757,7 @@ class AlphaOutcomeRWModel(RescorlaWagnerModel):
 			result = np.zeros((lever.size,1)) # log-likelihoods
 
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		err_ct = 0
 		for ii in range(lever.size):
