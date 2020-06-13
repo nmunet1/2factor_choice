@@ -415,31 +415,37 @@ def plotChoiceMat(data, compare='lr', sesstype=None, win_size=200, start=200, en
     # set colorbar label and limits according to specified comparison
     if compare == 'lr':
         cbar_label = 'P(left > right)'
+        cmap='plasma'
         vmin = 0
         vmax = 1
     elif compare == 'ab':
         cbar_label = 'P(A > B)'
+        cmap='plasma'
         vmin = 0
         vmax= 1
     elif compare == 'lr_diff':
         cbar_label = 'Left - Right (Mean Fitted Value)'
+        cmap='plasma'
         vmin = -4.6
         vmax = 4.6
     elif compare == 'lr_model':
         cbar_label = 'Predicted P(left > right)'
+        cmap='plasma'
         vmin = 0
         vmax = 1
     elif compare == 'lr_sim':
         cbar_label = 'Simulated P(left > right)'
+        cmap='plasma'
         vmin = 0
         vmax = 1
     elif compare == 'acc_sim':
         cbar_label = 'Simulation Accuracy'
-        vmin = 0
+        cmap='inferno'
+        vmin = 0.5
         vmax = 1
     
     # plot heatmap and subdividing gridlines
-    sns.heatmap(np.round(choice_mat,2), vmin=vmin, vmax=vmax, cmap='plasma', annot=annot, cbar_kws={'label': cbar_label})
+    sns.heatmap(np.round(choice_mat,2), vmin=vmin, vmax=vmax, cmap=cmap, annot=annot, cbar_kws={'label': cbar_label})
     plt.axvline(3,color='w', lw=2)
     plt.axvline(6,color='w', lw=2)
     plt.axhline(3,color='w', lw=2)

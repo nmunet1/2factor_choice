@@ -279,7 +279,7 @@ class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 			params = [params_init[label] for label in param_labels]
 			bounds = [self.bounds[label] for label in param_labels]
 
-			softmax_fits = fitSubjValues(block, model='ev', min_type=min_type).loc[date].to_dict()
+			softmax_fits = fitSubjValues(block, model='ev', min_type=min_type).loc[date,['beta','lr_bias']].to_dict()
 			self.params_fit.loc[date, 'beta'] = softmax_fits['beta']
 			self.params_fit.loc[date, 'lr_bias'] = softmax_fits['lr_bias']
 
@@ -476,8 +476,10 @@ class ChoiceKernelRWModel(RescorlaWagnerModel):
 		super().__init__(**kwargs)
 
 		self.params_init.update({'alpha_choice': alpha_choice, 'choice_bias': choice_bias})
+
 		self.bounds['alpha_choice'] = (0,1)
 		self.bounds['choice_bias'] = (0,None)
+
 		self.params_fit['alpha_choice'] = np.nan
 		self.params_fit['choice_bias'] = np.nan
 
@@ -496,7 +498,7 @@ class ChoiceKernelRWModel(RescorlaWagnerModel):
 			result = np.zeros((lever.size,1)) # log-likelihoods
 
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.4, 0.1, 0.7, 0.4, 0.1, 0.7, 0.4, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		err_ct = 0
 		for ii in range(lever.size):
@@ -529,8 +531,8 @@ class ChoiceKernelRWModel(RescorlaWagnerModel):
 					unchosen = idx_r
 				else:
 					choice = 1
-					chosen = idx_l
-					unchosen = idx_r
+					chosen = idx_r
+					unchosen = idx_l
 
 				if lever[ii] == choice:
 					outcome = amnt_map[chosen] * reward[ii]
@@ -562,21 +564,21 @@ class ChoiceKernelRWModel(RescorlaWagnerModel):
 
 		return result, values
 
-class AlphaFixedAlphaForcedRWModel(RescorlaWagnerModel):
-	def __init__(self, alpha_fixed=0.01, alpha_forced=0.01, **kwargs):
+class AlphaFreeAlphaForcedRWModel(RescorlaWagnerModel):
+	def __init__(self, alpha_free=0.01, alpha_forced=0.01, **kwargs):
 		super().__init__(**kwargs)
 
 		del self.params_init['alpha']
-		self.params_init.update({'alpha_fixed': alpha_fixed, 'alpha_forced': alpha_forced})
+		self.params_init.update({'alpha_free': alpha_free, 'alpha_forced': alpha_forced})
 
 		del self.bounds['alpha']
-		self.bounds.update({'alpha_fixed': (0,1), 'alpha_forced': (0,1)})
+		self.bounds.update({'alpha_free': (0,1), 'alpha_forced': (0,1)})
 
 		self.params_fit = self.params_fit.drop('alpha',1)
-		self.params_fit['alpha_fixed'] = np.nan
+		self.params_fit['alpha_free'] = np.nan
 		self.params_fit['alpha_forced'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, alpha_fixed=0.01, alpha_forced=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
+	def simSess(self, img_l, img_r, lever, reward, alpha_free=0.01, alpha_forced=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
@@ -640,12 +642,12 @@ class AlphaFixedAlphaForcedRWModel(RescorlaWagnerModel):
 				if np.isnan(img_l[ii]) or np.isnan(img_r[ii]):
 					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_forced, outcome)
 				else:
-					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_fixed, outcome)
+					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_free, outcome)
 
 		return result, values
 
 class AlphaAmountRWModel(RescorlaWagnerModel):
-	def __init__(self, alpha_fixed=0.01, alpha_forced=0.01, **kwargs):
+	def __init__(self, alpha_low=0.01, alpha_med=0.01, alpha_high=0.01, **kwargs):
 		super().__init__(**kwargs)
 
 		del self.params_init['alpha']
@@ -808,5 +810,91 @@ class AlphaOutcomeRWModel(RescorlaWagnerModel):
 					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_lose, outcome)
 				else:
 					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_win, outcome)
+
+		return result, values
+
+class AmountLearningRWModel(RescorlaWagnerModel):
+	def __init__(self, alpha_prob=0.01, alpha_amnt=0.01, **kwargs):
+		super().__init__(**kwargs)
+
+		del self.params_init['alpha']
+		self.params_init.update({'alpha_prob': alpha_prob, 'alpha_amnt': alpha_amnt})
+
+		del self.bounds['alpha']
+		self.bounds.update({'alpha_prob': (0,1), 'alpha_amnt': (0,1)})
+
+		self.params_fit = self.params_fit.drop('alpha',1)
+		self.params_fit['alpha_prob'] = np.nan
+		self.params_fit['alpha_amnt'] = np.nan
+
+	def simSess(self, img_l, img_r, lever, reward, alpha_prob=0.01, alpha_amnt=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		probs = np.zeros(9)
+		amnts = np.zeros(9)
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
+
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
+
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
+
+			p_l = softmax(q_l, q_r, beta, lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii]) # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen-1] * reward[ii]
+				else:
+					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])
+				
+				outcome = amnt_map[chosen-1] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				if outcome == 0:
+					probs[chosen] = self.learningRule(probs[chosen], alpha_prob, 0)
+				else:
+					probs[chosen] = self.learningRule(probs[chosen], alpha_prob, 1)
+					amnts[chosen] = self.learningRule(amnts[chosen], alpha_amnt, outcome)
+					
+				values[ii+1,:] = probs*amnts
 
 		return result, values
