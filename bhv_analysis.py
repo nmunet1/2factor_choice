@@ -118,7 +118,7 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
     
     return ts.rolling(window=win_size, min_periods=min_trials).mean()
 
-def choiceMat(data, compare='lr', sesstype=None, win_size=200, start=None, end='back', fits=None, model_params={}):
+def choiceMat(data, compare='lr', sesstype=None, win_size=200, start=None, end='back', model_params={}):
     '''
     Calculate choice matrix for all possible contingency pairs
 
@@ -156,20 +156,13 @@ def choiceMat(data, compare='lr', sesstype=None, win_size=200, start=None, end='
 
     if compare == 'lr_model':
         choice_mat = np.full((9,9), np.nan)
-
-        if fits is None:
-            model_fits = bhv_model.fitSubjValues(data, **model_params)[0]
-        else:
-            model_fits = fits
+        model_fits = bhv_model.fitSubjValues(data, **model_params)[0]
 
         for img_l in range(1,10):
             for img_r in range(1,10):
-                try:
-                    choice_mat[img_r-1, img_l-1] = \
-                        model_fits[(model_fits['left_image']==img_l) & \
-                        (model_fits['right_image']==img_r)]['prob_choose_left'].mean()
-                except:
-                    choice_mat[img_r-1, img_l-1] = np.nan
+                if img_l != img_r:
+                    choice_mat[img_r-1, img_l-1] = bhv_model.softmax(model_fits['value%i' % img_l], \
+                        model_fits['value%i' % img_r], model_fits['beta'], model_fits['lr_bias']).mean()
 
     else:
         data = data[isvalid(data,sets='new')].groupby('date').nth(trials)
@@ -247,7 +240,7 @@ def subdivide(choice_mat, by):
 
     return groups, labels
 
-def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
+def plotSession(data, date, series1='perf', series2=None, win_step=10, **kwargs):
     '''
     Plots rolling average of performance over time for a given session
 
@@ -391,7 +384,7 @@ def plotSession(data, date, series1='perf', series2=None, win_step=5, **kwargs):
         ax2.set_ylim(ylim2)
 
 def plotChoiceMat(data, compare='lr', sesstype=None, win_size=200, start=200, end='back', annot=True, \
-    fits=None, model_params={}):
+    model_params={}):
     '''
     Plots a confusion matrix for all possible contingency pairs
 
@@ -410,7 +403,7 @@ def plotChoiceMat(data, compare='lr', sesstype=None, win_size=200, start=200, en
     annot:    (Boolean) if True, annotates each box of matrix with its value
     '''
     choice_mat = choiceMat(data, compare=compare, sesstype=sesstype, win_size=win_size, start=start, end=end, 
-        fits=fits, model_params=model_params)
+        model_params=model_params)
     
     # set colorbar label and limits according to specified comparison
     if compare == 'lr':

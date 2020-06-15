@@ -86,7 +86,7 @@ class RescorlaWagnerModel(object):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*0.12
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -227,29 +227,83 @@ class RescorlaWagnerModel(object):
 
 		return sim_results, self.aic
 
-	def plotValueDiff(self, data, date, redo_sim=False, **kwargs):
-		# if redo_sim or (self.sim_results is None or not any(self.sim_results['date']==date)):
-		# 	self.sim_results = self.bootstrap(data, **kwargs)
+	def assessModel(self, data, aic=True, bic=True, n_trials=None, selection='first'):
+		'''
+		Returns DataFrame of AICs for each session
+		'''
+		data = data[bhv.isvalid(data, forced=True, sets='new')]
+		if not n_trials is None:
+			if selection == 'first':
+				data = data.groupby('date').head(n_trials)
+			elif selection == 'last':
+				data = data.groupby('date').tail(n_trials)
+			else:
+				raise ValueError
+
+		dates = data['date'].unique()
+		results = pd.DataFrame()
+
+		for date in dates:
+			sess_data = data[data['date']==date]
+			sess_est = self.simulate(sess_data, mode='est')
+
+			k = len(self.params_init) # number of free params
+			ll = sess_est['log-likelihood'].sum() # max log-likelihood
+
+			if aic:
+				results.loc[date,'AIC'] = 2*k - 2*ll
+			if bic:
+				n = sess_est.shape[0] # number of observations
+				results.loc[date,'BIC'] = k*np.log(n) - 2*ll
+
+		return results
+
+	def plotValueLearning(self, date, mode='sim'):
+		sess_sims = self.sim_results[self.sim_results['date']==date]
+		if mode == 'sim':
+			data = sess_sims
+		elif mode == 'est':
+			data = self.simulate(sess_sims, mode='est')
+		else:
+			raise ValueError
+
+		ev = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1]) * \
+			np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+
+		for img in range(1,10):
+			plt.figure()
+			plt.plot(data['value%i' % img].to_numpy())
+			plt.gca().axhline(ev[img-1],ls='--',color='k')
+			plt.xlabel('Trial')
+			plt.ylabel('Subjective Value')
+			if mode == 'sim':
+				plt.title('Image %i Simulation' % img)
+			else:
+				plt.title('Image %i Estimate' % img)
+
+	def plotValueDiff(self, date):
 		sess_sims = self.sim_results[self.sim_results['date']==date]
 
-		colors = ['blue','grey','red','blue','grey','red','blue','grey','red']
+		colors = ['blue','grey','red']
+		prob_labels = ['High','Medium','Low']
 
-		sess_data = data[data['date']==date]
-		est = self.simulate(sess_data, mode='est')
+		est = self.simulate(sess_sims, mode='est')
 
-		for img_set in [[1,2,3],[4,5,6],[7,8,9]]:
+		for ii, prob_group in enumerate([[1,2,3],[4,5,6],[7,8,9]]):
 			plt.figure()
-			for img_i in img_set:
-				value_diff = sess_sims['value%i' % img_i]
-				value_diff = value_diff.apply(lambda x: est['value%i' % img_i] - x)
-				orig_size = value_diff.shape
+			for img in prob_group:
+				value_diff = sess_sims['value%i' % img]
+				value_diff = value_diff.apply(lambda x: est['value%i' % img] - x)
+				n_trials, n_sims = value_diff.shape
 
-				value_diff = value_diff.to_numpy().T.reshape(np.prod(orig_size))
-				trials = np.tile(np.arange(orig_size[0])+1, orig_size[1])
+				value_diff = value_diff.to_numpy().reshape(n_trials*n_sims, order='F')
+				trials = np.tile(np.arange(1,n_trials+1), n_sims)
 
-				sns.lineplot(trials, value_diff, color=colors[img_i-1])
+				sns.lineplot(trials, value_diff, color=colors[(img%3)-1])
 			plt.xlabel('Trial')
 			plt.ylabel('Estimated Value - Simulation Value')
+			plt.legend(['High Reward','Medium Reward','Low Reward'])
+			plt.title('%s Probability Images' % prob_labels[ii])
 
 class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 	def __init__(self, alpha=0.01):
@@ -890,11 +944,11 @@ class AmountLearningRWModel(RescorlaWagnerModel):
 			# value update
 			if ii+1 < lever.size:
 				if outcome == 0:
-					probs[chosen] = self.learningRule(probs[chosen], alpha_prob, 0)
+					probs[chosen-1] = self.learningRule(probs[chosen-1], alpha_prob, 0)
 				else:
-					probs[chosen] = self.learningRule(probs[chosen], alpha_prob, 1)
-					amnts[chosen] = self.learningRule(amnts[chosen], alpha_amnt, outcome)
-					
+					probs[chosen-1] = self.learningRule(probs[chosen-1], alpha_prob, 1)
+					amnts[chosen-1] = self.learningRule(amnts[chosen-1], alpha_amnt, outcome)
+
 				values[ii+1,:] = probs*amnts
 
 		return result, values
