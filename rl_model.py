@@ -86,7 +86,7 @@ class RescorlaWagnerModel(object):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.ones((lever.size,9))*0.12
+		values = np.zeros((lever.size,9))
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -304,6 +304,79 @@ class RescorlaWagnerModel(object):
 			plt.ylabel('Estimated Value - Simulation Value')
 			plt.legend(['High Reward','Medium Reward','Low Reward'])
 			plt.title('%s Probability Images' % prob_labels[ii])
+
+class NonzeroInitValuesRWModel(RescorlaWagnerModel):
+	def __init__(self, v0=0.001, **kwargs):
+		super().__init__(**kwargs)
+
+		self.params_init['v0'] = v0
+		self.bounds['v0'] = (0,0.35)
+		self.params_fit['v0'] = np.nan
+
+	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, v0=0.001, beta=-0.1, lr_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.ones((lever.size,9))*v0
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
+
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
+
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
+
+			p_l = softmax(q_l, q_r, beta, lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii]) # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen-1] * reward[ii]
+				else:
+					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])
+				
+				outcome = amnt_map[chosen-1] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				values[ii+1,:] = values[ii,:]
+				values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha, outcome)
+
+		return result, values
 
 class FixedSoftmaxRescorlaWagnerModel(RescorlaWagnerModel):
 	def __init__(self, alpha=0.01):
