@@ -265,6 +265,7 @@ class RescorlaWagnerModel(object):
 
 		amnt_label = ['High','Medium','Low','High','Medium','Low','High','Medium','Low']
 		prob_label = ['High','High','High','Medium','Medium','Medium','Low','Low','Low']
+		x_max = 0
 
 		ev = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1]) * \
 			np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
@@ -277,10 +278,12 @@ class RescorlaWagnerModel(object):
 				for n in sims['iter'].unique():
 					sim_vals = sims[(sims['sim_choice']==img) & (sims['iter']==n)][val_label]
 					x = np.arange(sim_vals.size)
+					# x_max = max(x_max, sim_vals.size)
 					plt.plot(x, sim_vals, color=[0.8, 0.8, 1])
 
 				est_vals = est[((sess_data['lever']==-1) & (sess_data['left_image']==img)) | ((sess_data['lever']==1) & (sess_data['right_image']==img))][val_label]
 				x = np.arange(est_vals.size)
+				x_max = max(x_max, est_vals.size)
 
 			elif x_label == 'Trials':
 				for n in sims['iter'].unique():
@@ -296,6 +299,8 @@ class RescorlaWagnerModel(object):
 			
 			plt.plot(x, est_vals, color='k')
 			plt.gca().axhline(ev[img-1],ls='--',color='k')
+			if x_label == 'Updates':
+				plt.xlim([-10, x_max+10])
 			plt.xlabel(x_label)
 			plt.ylabel('Subjective Value')
 			plt.title('%s Probability, %s Reward' % (prob_label[img-1], amnt_label[img-1]))
@@ -1133,18 +1138,11 @@ class BayesianModel(RescorlaWagnerModel):
 		return result, values
 
 class LimitedMemoryBayesianModel(BayesianModel):
-	def __init__(self, tau=0.1, d=4, **kwargs):
+	def __init__(self, tau=0.01, **kwargs):
 		super().__init__(**kwargs)
 		self.params_init['tau'] = tau
-		# self.params_init.update({'tau': tau, 'd': d})
-
 		self.bounds['tau'] = (0,None)
-		# self.bounds['d'] = (1,None)
-
 		self.params_fit['tau'] = tau
-		# self.params_fit['d'] = d
-
-		self.d = d
 
 	def weightedLogLikelihood(self, p, weights, history):
 		wLL = weights * [p**h[0] * (1-p)**(h[1]-h[0]) for h in history]
@@ -1167,8 +1165,7 @@ class LimitedMemoryBayesianModel(BayesianModel):
 		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		# expected amount of reward for each image
-		prob_history = [[] for ii in range(9)]
-		reward_history = []
+		ll_history = [[[[] for c in range(9)] for r in range(3)]]
 		probs_est = np.ones(9)*prob_map.mean()
 		amnts_est = np.ones(9)*amnt_map.mean()
 
@@ -1192,15 +1189,15 @@ class LimitedMemoryBayesianModel(BayesianModel):
 				# simulate choice and reward outcome
 				if stats.bernoulli.rvs(p_l):
 					choice = -1
-					chosen = int(img_l[ii]) # chosen image index
+					chosen = int(img_l[ii])-1 # chosen image index
 				else:
 					choice = 1
-					chosen = int(img_r[ii])
+					chosen = int(img_r[ii])-1
 
 				if lever[ii] == choice:
-					outcome = amnt_map[chosen-1] * reward[ii]
+					outcome = amnt_map[chosen] * reward[ii]
 				else:
-					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+					outcome = amnt_map[chosen] * stats.bernoulli.rvs(prob_map[chosen])
 
 				result[ii,:] = [choice, outcome]
 
@@ -1208,37 +1205,30 @@ class LimitedMemoryBayesianModel(BayesianModel):
 				# compute single-trial choice likelihood
 				if lever[ii] == -1:
 					result[ii] = np.log(p_l)
-					chosen = int(img_l[ii])
+					chosen = int(img_l[ii])-1
 				else:
 					result[ii] = np.log(1-p_l)
-					chosen = int(img_r[ii])
+					chosen = int(img_r[ii])-1
 				
-				outcome = amnt_map[chosen-1] * reward[ii]
+				outcome = amnt_map[chosen] * reward[ii]
 
 			# value update
 			if ii+1 < lever.size:
-				if outcome > 0:
-					amnts_est[chosen-1] = outcome
-
-				n = len(prob_history[chosen-1])
-				if n == 0:
-					prob_history[chosen-1].append(np.array([reward[ii],1]))
-				elif n < self.d:
-					prob_history[chosen-1].append([reward[ii],1] + prob_history[chosen-1][n-1])
+				if outcome == 0:
+					ll_history[0][chosen].append(0.7)
+					ll_history[1][chosen].append(0.4)
+					ll_history[2][chosen].append(0.1)
 				else:
-					prob_history[chosen-1].append([reward[ii],1] + prob_history[chosen-1][n-1] - \
-						(prob_history[chosen-1][n+1-self.d] - prob_history[chosen-1][n-self.d]))
+					ll_history[0][chosen].append(0.3)
+					ll_history[1][chosen].append(0.6)
+					ll_history[2][chosen].append(0.9)
+					amnts_est[chosen] = outcome
 
-				weights = np.exp(-tau*np.arange(n+1))
-				weights /= weights.sum()
+				weights = np.exp(-tau*np.arange(len(ll_history[0][chosen])))
 
-				ll_high = np.dot(weights, [0.7**h[0] * (0.3)**(h[1]-h[0]) for h in prob_history[chosen-1]])
-				# dist = [0.7**h[0] * (0.3)**(h[1]-h[0]) for h in prob_history[chosen-1]]
-				# print(dist)
-				# print(weights)
-				# ll_high = np.dot(weights, dist)
-				ll_med = np.dot(weights, [0.4**h[0] * (0.6)**(h[1]-h[0]) for h in prob_history[chosen-1]])
-				ll_low = np.dot(weights, [0.1**h[0] * (0.9)**(h[1]-h[0]) for h in prob_history[chosen-1]])
+				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
+				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
+				ll_low = (np.array(ll_history[2][chosen])**weights).prod()
 
 				probs_est[chosen-1] = (0.7*ll_high + 0.4*ll_med + 0.1*ll_low) / (ll_high + ll_med + ll_low)
 
