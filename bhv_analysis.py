@@ -558,3 +558,48 @@ def plotChoiceEvolution(data, compare='lr', sesstype=None, by=None, epoch_size=5
         plt.xlim([0, extent+200])
 
     return corr_w_final, labels
+
+def winStayLoseShift(data, max_trials=400):
+    data = data[isvalid(data,forced=True,sets='new')]
+    if not max_trials is None:
+        data = data.groupby('date').head(max_trials)
+
+    dates = data['date'].unique()
+    stay_trials = np.zeros((dates.size, 9, 2))
+    free_trials = np.zeros((dates.size, 9, 2))
+    for d, date in enumerate(dates):
+        sess = data[data['date']==date]
+        last_outcome = -np.ones(9)
+        for t in range(sess.shape[0]):
+            trial = sess.iloc[t]
+
+            if trial['lever'] == -1:
+                chosen = int(trial['left_image']-1)
+                unchosen = trial['right_image']-1
+            else:
+                chosen = int(trial['right_image']-1)
+                unchosen = trial['left_image']-1
+
+            if not np.isnan(unchosen):
+                # Update wsls history for chosen image
+                if last_outcome[chosen] == 1:
+                    stay_trials[d, chosen, 0] += 1
+                    free_trials[d, chosen, 0] += 1
+                elif last_outcome[chosen] == 0:
+                    stay_trials[d, chosen, 1] += 1
+                    free_trials[d, chosen, 1] += 1
+
+                # update wsls history for unchosen image
+                unchosen = int(unchosen)
+
+                if last_outcome[unchosen] == 1:
+                    free_trials[d, unchosen, 0] += 1
+                elif last_outcome[unchosen] == 0:
+                    free_trials[d, unchosen, 1] += 1
+
+                last_outcome[unchosen] = -1
+
+            # update chosen outcome (even if forced)
+            last_outcome[chosen] = ~np.isnan(trial['if_reward'])
+    
+    return stay_trials, free_trials

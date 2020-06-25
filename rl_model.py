@@ -14,7 +14,7 @@ class RescorlaWagnerModel(object):
 	Basic Rescorla-Wagner model with stochastic (softmax) choice and fixed left-right bias
 	'''
 
-	def __init__(self, fname=None, alpha=0.01, beta=-0.1, lr_bias=0.1):
+	def __init__(self, alpha=0.01, beta=-0.1, lr_bias=0.1):
 		'''
 		alpha: 		(float) value learning rate
 		beta: 		(float)softmax inverse temperature
@@ -26,6 +26,7 @@ class RescorlaWagnerModel(object):
 		self.params_fit = pd.DataFrame(columns=['alpha','beta','lr_bias'])
 
 		self.aic = None # Akaike Information Criterion of best fit model
+		self.data = None
 		self.sim_results = None
 
 		self.levels2prob = {1: 0.7, 2: 0.4, 3: 0.1} # conversion from probability levels to probabilities of reward
@@ -123,7 +124,7 @@ class RescorlaWagnerModel(object):
 				else:
 					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
 
-				result[ii,:] = [choice, outcome]
+				result[ii,:] = [chosen, outcome]
 
 			else:
 				# compute single-trial choice likelihood
@@ -143,18 +144,18 @@ class RescorlaWagnerModel(object):
 
 		return result, values
 
-	def bootstrap(self, data, n_iter=100, merge_data=True, verbose=False):
-		if merge_data:
-			results = data[bhv.isvalid(data, forced=True, sets='new')]
-		else:
-			results = pd.DataFrame()
+	def bootstrap(self, data, n_iter=100, verbose=False):
+		data = data[bhv.isvalid(data, forced=True, sets='new')]
+		results = pd.DataFrame()
 
 		for n in range(n_iter):
 			if n % 10 == 0 and verbose:
 				print('simulation', n)
-			res_n = self.simulate(data, mode='sim', merge_data=False)
-			# res_n['sim'] = n
-			results = pd.concat([results, res_n], axis=1)
+			sim_n = self.simulate(data, mode='sim', merge_data=False)
+			sim_n.insert(0,'iter',n)
+			results = pd.concat([results, sim_n], axis=0)
+
+		self.data = data
 		self.sim_results = results
 
 		return results
@@ -257,28 +258,47 @@ class RescorlaWagnerModel(object):
 
 		return results
 
-	def plotValueLearning(self, date, mode='sim'):
-		sess_sims = self.sim_results[self.sim_results['date']==date]
-		if mode == 'sim':
-			data = sess_sims
-		elif mode == 'est':
-			data = self.simulate(sess_sims, mode='est')
-		else:
-			raise ValueError
+	def plotValueLearning(self, date, x_label='Updates'):
+		sess_data = self.data[self.data['date']==date]
+		sims = self.sim_results.loc[sess_data.index]
+		est = self.simulate(sess_data, mode='est')
+
+		amnt_label = ['High','Medium','Low','High','Medium','Low','High','Medium','Low']
+		prob_label = ['High','High','High','Medium','Medium','Medium','Low','Low','Low']
 
 		ev = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1]) * \
 			np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
 
 		for img in range(1,10):
 			plt.figure()
-			plt.plot(data['value%i' % img].to_numpy())
-			plt.gca().axhline(ev[img-1],ls='--',color='k')
-			plt.xlabel('Trial')
-			plt.ylabel('Subjective Value')
-			if mode == 'sim':
-				plt.title('Image %i Simulation' % img)
+			val_label = 'value%i' % img
+
+			if x_label == 'Updates':
+				for n in sims['iter'].unique():
+					sim_vals = sims[(sims['sim_choice']==img) & (sims['iter']==n)][val_label]
+					x = np.arange(sim_vals.size)
+					plt.plot(x, sim_vals, color=[0.8, 0.8, 1])
+
+				est_vals = est[((sess_data['lever']==-1) & (sess_data['left_image']==img)) | ((sess_data['lever']==1) & (sess_data['right_image']==img))][val_label]
+				x = np.arange(est_vals.size)
+
+			elif x_label == 'Trials':
+				for n in sims['iter'].unique():
+					sim_vals = sims[sims['iter']==n][val_label]
+					x = np.arange(sim_vals.size)
+					plt.plot(x, sim_vals, color=[0.8, 0.8, 1])
+
+				est_vals = est[val_label]
+				x = np.arange(est_vals.size)
+
 			else:
-				plt.title('Image %i Estimate' % img)
+				raise ValueError
+			
+			plt.plot(x, est_vals, color='k')
+			plt.gca().axhline(ev[img-1],ls='--',color='k')
+			plt.xlabel(x_label)
+			plt.ylabel('Subjective Value')
+			plt.title('%s Probability, %s Reward' % (prob_label[img-1], amnt_label[img-1]))
 
 	def plotValueDiff(self, date):
 		sess_sims = self.sim_results[self.sim_results['date']==date]
@@ -494,7 +514,7 @@ class AlphaDecayRWModel(RescorlaWagnerModel):
 				else:
 					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
 
-				result[ii,:] = [choice, outcome]
+				result[ii,:] = [chosen, outcome]
 
 			else:
 				# compute single-trial choice likelihood
@@ -1027,7 +1047,7 @@ class AmountLearningRWModel(RescorlaWagnerModel):
 
 class BayesianModel(RescorlaWagnerModel):
 	def __init__(self, beta=-0.1, lr_bias=0.1):
-		super().__init__()
+		super().__init__(beta=beta, lr_bias=lr_bias)
 
 		del self.params_init['alpha']
 		del self.bounds['alpha']
@@ -1052,21 +1072,23 @@ class BayesianModel(RescorlaWagnerModel):
 		# likelihoods for each probability of reward (low, medium, high) for each image
 		ll = np.ones((3,9))
 
-		# expected amount of reward for each image
+		# expected reward contingencies for each image
 		probs_est = np.ones(9)*prob_map.mean()
 		amnts_est = np.ones(9)*amnt_map.mean()
 
 		for ii in range(lever.size):
+			values[ii,:] = amnts_est*probs_est
+
 			# simulated probability of choosing left
 			if np.isnan(img_l[ii]):
 				q_l = -np.inf
 			else:
-				q_l = probs_est[ii, int(img_l[ii])-1] * amnts_est[ii, int(img_l[ii]-1)]
+				q_l = values[ii, int(img_l[ii])-1]
 
 			if np.isnan(img_r[ii]):
 				q_r = -np.inf
 			else:
-				q_r = probs_est[ii, int(img_r[ii])-1] * amnts_est[ii, int(img_r[ii]-1)]
+				q_r = values[ii, int(img_r[ii])-1]
 
 			p_l = softmax(q_l, q_r, beta, lr_bias)
 
@@ -1108,6 +1130,116 @@ class BayesianModel(RescorlaWagnerModel):
 				post = ll[:,chosen-1]/ll[:,chosen-1].sum() # uniform prior, so not explicitly including prior in calculation
 				probs_est[chosen-1] = np.dot([0.7, 0.4, 0.1],post)
 
-				values[ii+1,:] = probs_est * amnts_est
+		return result, values
+
+class LimitedMemoryBayesianModel(BayesianModel):
+	def __init__(self, tau=0.1, d=4, **kwargs):
+		super().__init__(**kwargs)
+		self.params_init['tau'] = tau
+		# self.params_init.update({'tau': tau, 'd': d})
+
+		self.bounds['tau'] = (0,None)
+		# self.bounds['d'] = (1,None)
+
+		self.params_fit['tau'] = tau
+		# self.params_fit['d'] = d
+
+		self.d = d
+
+	def weightedLogLikelihood(self, p, weights, history):
+		wLL = weights * [p**h[0] * (1-p)**(h[1]-h[0]) for h in history]
+		return wLL.sum()
+
+	def simSess(self, img_l, img_r, lever, reward, tau=0.1, beta=-0.1, lr_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
+
+		# expected amount of reward for each image
+		prob_history = [[] for ii in range(9)]
+		reward_history = []
+		probs_est = np.ones(9)*prob_map.mean()
+		amnts_est = np.ones(9)*amnt_map.mean()
+
+		for ii in range(lever.size):
+			values[ii,:] = amnts_est*probs_est
+
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
+
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
+
+			p_l = softmax(q_l, q_r, beta, lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii]) # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen-1] * reward[ii]
+				else:
+					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])
+				
+				outcome = amnt_map[chosen-1] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				if outcome > 0:
+					amnts_est[chosen-1] = outcome
+
+				n = len(prob_history[chosen-1])
+				if n == 0:
+					prob_history[chosen-1].append(np.array([reward[ii],1]))
+				elif n < self.d:
+					prob_history[chosen-1].append([reward[ii],1] + prob_history[chosen-1][n-1])
+				else:
+					prob_history[chosen-1].append([reward[ii],1] + prob_history[chosen-1][n-1] - \
+						(prob_history[chosen-1][n+1-self.d] - prob_history[chosen-1][n-self.d]))
+
+				weights = np.exp(-tau*np.arange(n+1))
+				weights /= weights.sum()
+
+				ll_high = np.dot(weights, [0.7**h[0] * (0.3)**(h[1]-h[0]) for h in prob_history[chosen-1]])
+				# dist = [0.7**h[0] * (0.3)**(h[1]-h[0]) for h in prob_history[chosen-1]]
+				# print(dist)
+				# print(weights)
+				# ll_high = np.dot(weights, dist)
+				ll_med = np.dot(weights, [0.4**h[0] * (0.6)**(h[1]-h[0]) for h in prob_history[chosen-1]])
+				ll_low = np.dot(weights, [0.1**h[0] * (0.9)**(h[1]-h[0]) for h in prob_history[chosen-1]])
+
+				probs_est[chosen-1] = (0.7*ll_high + 0.4*ll_med + 0.1*ll_low) / (ll_high + ll_med + ll_low)
 
 		return result, values
