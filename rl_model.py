@@ -1138,17 +1138,14 @@ class BayesianModel(RescorlaWagnerModel):
 		return result, values
 
 class LimitedMemoryBayesianModel(BayesianModel):
-	def __init__(self, tau=0.01, **kwargs):
+	def __init__(self, beta_mem=0.1, d=5, **kwargs):
 		super().__init__(**kwargs)
 		self.params_init['tau'] = tau
 		self.bounds['tau'] = (0,None)
 		self.params_fit['tau'] = tau
 
-	def weightedLogLikelihood(self, p, weights, history):
-		wLL = weights * [p**h[0] * (1-p)**(h[1]-h[0]) for h in history]
-		return wLL.sum()
-
-	def simSess(self, img_l, img_r, lever, reward, tau=0.1, beta=-0.1, lr_bias=0.1, mode='sim'):
+	def simSess(self, img_l, img_r, lever, reward, beta_mem=0.1, d=5, beta=-0.1, lr_bias=0.1, \
+		mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
@@ -1165,7 +1162,7 @@ class LimitedMemoryBayesianModel(BayesianModel):
 		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
 		# expected amount of reward for each image
-		ll_history = [[[[] for c in range(9)] for r in range(3)]]
+		ll_history = [[[] for c in range(9)] for r in range(3)]
 		probs_est = np.ones(9)*prob_map.mean()
 		amnts_est = np.ones(9)*amnt_map.mean()
 
@@ -1224,7 +1221,9 @@ class LimitedMemoryBayesianModel(BayesianModel):
 					ll_history[2][chosen].append(0.9)
 					amnts_est[chosen] = outcome
 
-				weights = np.exp(-tau*np.arange(len(ll_history[0][chosen])))
+				weights = np.exp(1+np.arange(beta_mem*(len(ll_history[0][chosen])-d)))**-1
+				weights /= weights[0]
+				# weights = np.exp(-tau*np.arange(len(ll_history[0][chosen])))
 
 				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
 				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
