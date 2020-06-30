@@ -564,12 +564,21 @@ def winStayLoseShift(data, max_trials=400):
     if not max_trials is None:
         data = data.groupby('date').head(max_trials)
 
+    # Running logs
+    date_log = [] # dates, in the form yyyy-mm-dd
+    trial_log = [] # trial numbers
+    img_log = [] # image ids
+    stay_log = [] # stay = 1, shift = 0
+    win_log = []  # win = 1, loss = 0
+    gap_log = [] # sizes of gaps since image was last chosen
+
     dates = data['date'].unique()
-    stay_trials = np.zeros((dates.size, 9, 2))
-    free_trials = np.zeros((dates.size, 9, 2))
-    for d, date in enumerate(dates):
+    for date in dates:
         sess = data[data['date']==date]
-        last_outcome = -np.ones(9)
+
+        last_outcome = -np.ones(9) # win = 1, loss = 0, unchosen = -1
+        last_t = -np.ones(9) # last chosen trial
+
         for t in range(sess.shape[0]):
             trial = sess.iloc[t]
 
@@ -582,24 +591,31 @@ def winStayLoseShift(data, max_trials=400):
 
             if not np.isnan(unchosen):
                 # Update wsls history for chosen image
-                if last_outcome[chosen] == 1:
-                    stay_trials[d, chosen, 0] += 1
-                    free_trials[d, chosen, 0] += 1
-                elif last_outcome[chosen] == 0:
-                    stay_trials[d, chosen, 1] += 1
-                    free_trials[d, chosen, 1] += 1
+                if last_outcome[chosen] >= 0:
+                    date_log.append(date)
+                    trial_log.append(t)
+                    img_log.append(chosen+1)
+                    stay_log.append(1)
+                    win_log.append(last_outcome[chosen])
+                    gap_log.append(t-last_t[chosen])
 
                 # update wsls history for unchosen image
                 unchosen = int(unchosen)
-
-                if last_outcome[unchosen] == 1:
-                    free_trials[d, unchosen, 0] += 1
-                elif last_outcome[unchosen] == 0:
-                    free_trials[d, unchosen, 1] += 1
+                if last_outcome[unchosen] >= 0:
+                    date_log.append(date)
+                    trial_log.append(t)
+                    img_log.append(unchosen+1)
+                    stay_log.append(0)
+                    win_log.append(last_outcome[unchosen])
+                    gap_log.append(t-last_t[unchosen]-1)
 
                 last_outcome[unchosen] = -1
 
             # update chosen outcome (even if forced)
             last_outcome[chosen] = ~np.isnan(trial['if_reward'])
+            last_t[chosen] = t
     
-    return stay_trials, free_trials
+    wsls_results = pd.DataFrame({'date': date_log, 'trial': trial_log, 'image': img_log, \
+        'stay': stay_log, 'last trial': win_log, 'gap_size': gap_log})
+
+    return wsls_results

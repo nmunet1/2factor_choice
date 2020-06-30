@@ -1138,13 +1138,17 @@ class BayesianModel(RescorlaWagnerModel):
 		return result, values
 
 class LimitedMemoryBayesianModel(BayesianModel):
-	def __init__(self, beta_mem=0.1, d=5, **kwargs):
+	def __init__(self, tau=0.01, **kwargs):
 		super().__init__(**kwargs)
 		self.params_init['tau'] = tau
 		self.bounds['tau'] = (0,None)
 		self.params_fit['tau'] = tau
+		# self.params_init.update({'beta_mem': beta_mem, 'd': d})
+		# self.bounds.update({'beta_mem': (0, None), 'd': (1,None)})
+		# self.params_fit['beta_mem'] = np.nan
+		# self.params_fit['d'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, beta_mem=0.1, d=5, beta=-0.1, lr_bias=0.1, \
+	def simSess(self, img_l, img_r, lever, reward, tau=0.01, beta=-0.1, lr_bias=0.1, \
 		mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
@@ -1212,23 +1216,23 @@ class LimitedMemoryBayesianModel(BayesianModel):
 			# value update
 			if ii+1 < lever.size:
 				if outcome == 0:
-					ll_history[0][chosen].append(0.7)
-					ll_history[1][chosen].append(0.4)
-					ll_history[2][chosen].append(0.1)
-				else:
 					ll_history[0][chosen].append(0.3)
 					ll_history[1][chosen].append(0.6)
 					ll_history[2][chosen].append(0.9)
+				else:
+					ll_history[0][chosen].append(0.7)
+					ll_history[1][chosen].append(0.4)
+					ll_history[2][chosen].append(0.1)
 					amnts_est[chosen] = outcome
 
-				weights = np.exp(1+np.arange(beta_mem*(len(ll_history[0][chosen])-d)))**-1
-				weights /= weights[0]
-				# weights = np.exp(-tau*np.arange(len(ll_history[0][chosen])))
+				# weights = np.flip((1+np.exp(beta_mem*(np.arange(len(ll_history[0][chosen]))-d)))**-1)
+				# weights /= weights[-1]
+				weights = np.flip(np.exp(-tau*np.arange(len(ll_history[0][chosen]))))
 
 				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
 				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
 				ll_low = (np.array(ll_history[2][chosen])**weights).prod()
 
-				probs_est[chosen-1] = (0.7*ll_high + 0.4*ll_med + 0.1*ll_low) / (ll_high + ll_med + ll_low)
+				probs_est[chosen] = (0.7*ll_high + 0.4*ll_med + 0.1*ll_low) / (ll_high + ll_med + ll_low)
 
 		return result, values
