@@ -124,7 +124,7 @@ class RescorlaWagnerModel(object):
 				else:
 					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
 
-				result[ii,:] = [chosen, outcome]
+				result[ii,:] = [choice, outcome]
 
 			else:
 				# compute single-trial choice likelihood
@@ -258,6 +258,38 @@ class RescorlaWagnerModel(object):
 
 		return results
 
+	def plotEVLearning(self, date, win_size=50, min_trials=10, win_step=10):
+		block_data = self.data[self.data['date']==date]
+		block_data = block_data[bhv.isvalid(block_data, sets='all')]
+		block_sims = self.sim_results.loc[block_data.index]
+
+		left_amnt = block_data['left_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
+		left_prob = block_data['left_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
+		right_amnt = block_data['right_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
+		right_prob = block_data['right_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
+
+		optimal = (left_amnt*left_prob > right_amnt*right_prob).replace({True: -1.0, False: 1.0})
+
+		sim_opt = block_sims.set_index('iter',append=True)['sim_choice'].unstack('iter')
+		sim_opt = sim_opt.apply(lambda x: x == optimal, axis=0).reset_index(drop=True)
+		sim_opt = sim_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
+
+		real_opt = (block_data['lever'] == optimal).reset_index(drop=True)
+		real_opt = real_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
+
+		plt.figure()
+		plt.axhline(0.5, color=[0.75, 0.75, 0.75], lw=0.75)
+		plt.axhline(0.8, color=[0.75, 0.75, 0.75], lw=0.75)
+
+		plt.errorbar(sim_opt.index, sim_opt.mean(axis=1), sim_opt.sem(axis=1), \
+			color='r', ls='--', ecolor='pink')
+		plt.plot(real_opt, color='k')
+
+		plt.title(date)
+		plt.xlabel('Free Trial')
+		plt.ylabel('P(optimal')
+		plt.ylim(0.4, 1.01)
+
 	def plotValueLearning(self, date, x_label='Updates'):
 		sess_data = self.data[self.data['date']==date]
 		sims = self.sim_results.loc[sess_data.index]
@@ -276,7 +308,9 @@ class RescorlaWagnerModel(object):
 
 			if x_label == 'Updates':
 				for n in sims['iter'].unique():
-					sim_vals = sims[(sims['sim_choice']==img) & (sims['iter']==n)][val_label]
+					sim_vals = sims[(((sess_data['left_image'] == img) & (sims['sim_choice'] == -1)) | \
+							((sess_data['right_image'] == img) & (sims['sim_choice'] == 1))) & \
+							(sims['iter'] == n)][val_label]
 					x = np.arange(sim_vals.size)
 					# x_max = max(x_max, sim_vals.size)
 					plt.plot(x, sim_vals, color=[0.8, 0.8, 1])
@@ -1225,9 +1259,102 @@ class LimitedMemoryBayesianModel(BayesianModel):
 					ll_history[2][chosen].append(0.1)
 					amnts_est[chosen] = outcome
 
-				# weights = np.flip((1+np.exp(beta_mem*(np.arange(len(ll_history[0][chosen]))-d)))**-1)
-				# weights /= weights[-1]
 				weights = np.flip(np.exp(-tau*np.arange(len(ll_history[0][chosen]))))
+
+				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
+				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
+				ll_low = (np.array(ll_history[2][chosen])**weights).prod()
+
+				probs_est[chosen] = (0.7*ll_high + 0.4*ll_med + 0.1*ll_low) / (ll_high + ll_med + ll_low)
+
+		return result, values
+
+class SigmoidalMemoryBayesianModel(BayesianModel):
+	def __init__(self, tau=0.01, **kwargs):
+		super().__init__(**kwargs)
+		self.params_init.update({'tau': tau, 'd': d})
+		self.bounds.update({'tau': (0, None), 'd': (1,None)})
+		self.params_fit['tau'] = np.nan
+		self.params_fit['d'] = np.nan
+
+	def simSess(self, img_l, img_r, lever, reward, tau=1, d=4.5, beta=-0.1, lr_bias=0.1, \
+		mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
+
+		# expected amount of reward for each image
+		ll_history = [[[] for c in range(9)] for r in range(3)]
+		probs_est = np.ones(9)*prob_map.mean()
+		amnts_est = np.ones(9)*amnt_map.mean()
+
+		for ii in range(lever.size):
+			values[ii,:] = amnts_est*probs_est
+
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
+
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
+
+			p_l = softmax(q_l, q_r, beta, lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii])-1 # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])-1
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen] * reward[ii]
+				else:
+					outcome = amnt_map[chosen] * stats.bernoulli.rvs(prob_map[chosen])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])-1
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])-1
+				
+				outcome = amnt_map[chosen] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				if outcome == 0:
+					ll_history[0][chosen].append(0.3)
+					ll_history[1][chosen].append(0.6)
+					ll_history[2][chosen].append(0.9)
+				else:
+					ll_history[0][chosen].append(0.7)
+					ll_history[1][chosen].append(0.4)
+					ll_history[2][chosen].append(0.1)
+					amnts_est[chosen] = outcome
+
+				weights = np.flip((1+np.exp(tau*(np.arange(len(ll_history[0][chosen]))-d)))**-1)
 
 				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
 				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
