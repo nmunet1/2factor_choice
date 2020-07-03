@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.optimize import minimize, basinhopping
+from scipy.optimize import minimize, basinhopping, NonlinearConstraint
 import seaborn as sns
 import time
 
@@ -119,10 +119,11 @@ class RescorlaWagnerModel(object):
 					choice = 1
 					chosen = int(img_r[ii])
 
-				if lever[ii] == choice:
-					outcome = amnt_map[chosen-1] * reward[ii]
-				else:
-					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+				# if lever[ii] == choice:
+				# 	outcome = amnt_map[chosen-1] * reward[ii]
+				# else:
+				# 	outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+				outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
 
 				result[ii,:] = [choice, outcome]
 
@@ -174,7 +175,7 @@ class RescorlaWagnerModel(object):
 
 		return -self.simSess(img_l, img_r, lever, reward, mode='est', **param_dict)[0].sum()
 
-	def fit(self, data, params_init=None, verbose=False, min_type='local', **kwargs):
+	def fit(self, data, params_init=None, verbose=False, method='L-BFGS-B', min_type='local', cons=(), **kwargs):
 		'''
 		Fit model free parameters
 
@@ -198,7 +199,7 @@ class RescorlaWagnerModel(object):
 			# fit data by minimizing negative log-likelihood of choice behavior given model and parameters
 			if min_type == 'local':
 				opt = minimize(self.negLogLikelihood, params, args=(param_labels, *self.data2numpy(block)), \
-					tol=1e-4, bounds=bounds, **kwargs)
+					method=method, tol=1e-4, bounds=bounds, constraints=cons, **kwargs)
 
 				if verbose or not opt.success:
 					print(date, 'fitting failed:')
@@ -208,8 +209,9 @@ class RescorlaWagnerModel(object):
 					self.params_fit.loc[date, param_labels] = list(opt.x)
 
 			elif min_type == 'global':
-				opt = basinhopping(self.negLogLikelihood, params, minimizer_kwargs={'method':'L-BFGS-B', \
-					'args':(param_labels, *self.data2numpy(block)), 'tol':1e-4, 'bounds':bounds})
+				opt = basinhopping(self.negLogLikelihood, params, minimizer_kwargs={'method':method, \
+					'args':(param_labels, *self.data2numpy(block)), 'tol':1e-4, 'bounds':bounds, \
+					'constraints': cons})
 
 				if verbose or not opt.lowest_optimization_result.success:
 					print(date, 'fitting failed:')
@@ -277,17 +279,18 @@ class RescorlaWagnerModel(object):
 		real_opt = (block_data['lever'] == optimal).reset_index(drop=True)
 		real_opt = real_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
 
-		plt.figure()
-		plt.axhline(0.5, color=[0.75, 0.75, 0.75], lw=0.75)
-		plt.axhline(0.8, color=[0.75, 0.75, 0.75], lw=0.75)
+		all_opt = pd.concat((real_opt, sim_opt.stack().reset_index('iter',drop=True)), \
+			axis=1).set_axis(['Monkey C', 'Model'], axis=1)
 
-		plt.errorbar(sim_opt.index, sim_opt.mean(axis=1), sim_opt.sem(axis=1), \
-			color='r', ls='--', ecolor='pink')
-		plt.plot(real_opt, color='k')
+		plt.figure()
+		plt.axhline(0.5, color=[0.75, 0.75, 0.75], ls='--')
+		plt.axhline(0.8, color=[0.75, 0.75, 0.75], ls='--')
+
+		sns.lineplot(data=all_opt, palette={'Monkey C': 'grey', 'Model': 'red'}, dashes=False)
 
 		plt.title(date)
 		plt.xlabel('Free Trial')
-		plt.ylabel('P(optimal')
+		plt.ylabel('P(Optimal)')
 		plt.ylim(0.4, 1.01)
 
 	def plotValueLearning(self, date, x_label='Updates'):
@@ -553,7 +556,7 @@ class AlphaDecayRWModel(RescorlaWagnerModel):
 				else:
 					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
 
-				result[ii,:] = [chosen, outcome]
+				result[ii,:] = [choice, outcome]
 
 			else:
 				# compute single-trial choice likelihood
@@ -1270,7 +1273,7 @@ class LimitedMemoryBayesianModel(BayesianModel):
 		return result, values
 
 class SigmoidalMemoryBayesianModel(BayesianModel):
-	def __init__(self, tau=0.01, **kwargs):
+	def __init__(self, tau=1, d=4.5, **kwargs):
 		super().__init__(**kwargs)
 		self.params_init.update({'tau': tau, 'd': d})
 		self.bounds.update({'tau': (0, None), 'd': (1,None)})
@@ -1363,3 +1366,7 @@ class SigmoidalMemoryBayesianModel(BayesianModel):
 				probs_est[chosen] = (0.7*ll_high + 0.4*ll_med + 0.1*ll_low) / (ll_high + ll_med + ll_low)
 
 		return result, values
+
+	def fit(self, data, **kwargs):
+		con = {'type': 'ineq', 'fun': lambda x: ((1+np.exp(-x[2]*x[3]))**-1) - 0.95}
+		super().fit(data, method='SLSQP', cons=(con), **kwargs)

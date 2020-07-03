@@ -82,6 +82,25 @@ def isvalid(data, forced=False, sets='new'):
     
     return valid
 
+def simRollingAvg(block_data, block_sims, win_size=50, min_trials=10):
+    '''
+    Calculates a rolling average of simulation performance
+
+    block_data: (DataFrame) real data from block of trials
+    block_sims: (DataFrame) simulations of block of trials
+    win_size: (int) rolling window size, in trials
+    min_trials: (int) minimum number of trials to include in rolling average
+    '''
+    block_data = block_data[isvalid(block_data, sets='all')]
+
+    left_amnt = block_data['left_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
+    left_prob = block_data['left_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
+    right_amnt = block_data['right_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
+    right_prob = block_data['right_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
+
+    perf = (left_amnt*left_prob > right_amnt*right_prob).replace({True: -1.0, False: 1.0})
+    perf = (perf == block_sims[''])
+
 def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
     '''
     Calculates a rolling average of a given timeseries for the input block data
@@ -94,18 +113,14 @@ def rollingAvg(block, output = 'perf', win_size=50, min_trials=10):
     min_trials: (int) minimum number of trials to include in rolling average
     '''
     block = block[isvalid(block, sets='all')]
-    if output in ['perf','model']:
+    if output == 'perf':
         left_amnt = block['left_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
         left_prob = block['left_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
         right_amnt = block['right_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
         right_prob = block['right_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
 
         ts = (left_amnt*left_prob > right_amnt*right_prob).replace({True: -1.0, False: 1.0})
-
-        if output == 'perf':
-            ts = (ts == block['lever']).replace({True:1, False:0})
-        else:
-            ts = block['sim_choice'].replace({True:1, False:0}).apply(lambda x: x == ts)
+        ts = (ts == block['lever']).replace({True:1, False:0})
 
     elif output == 'model_accuracy':
         ts = block['sim_choice'].apply(lambda x: x == block['lever'])
@@ -239,7 +254,7 @@ def subdivide(choice_mat, by):
             ii += 1
 
     return groups, labels
-
+    
 def plotSession(data, date, series1='perf', series2=None, win_step=10, **kwargs):
     '''
     Plots rolling average of performance over time for a given session
