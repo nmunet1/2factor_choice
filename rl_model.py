@@ -1273,14 +1273,15 @@ class LimitedMemoryBayesianModel(BayesianModel):
 		return result, values
 
 class SigmoidalMemoryBayesianModel(BayesianModel):
-	def __init__(self, tau=1, d=4.5, **kwargs):
+	def __init__(self, tau=1, d=4, w_lim=0.001, **kwargs):
 		super().__init__(**kwargs)
-		self.params_init.update({'tau': tau, 'd': d})
-		self.bounds.update({'tau': (0, None), 'd': (1,None)})
+		self.params_init.update({'tau': tau, 'd': d, 'w_lim':w_lim})
+		self.bounds.update({'tau': (0, None), 'd': (1,None), 'w_lim':(0,0.95)})
 		self.params_fit['tau'] = np.nan
 		self.params_fit['d'] = np.nan
+		self.params_fit['w_lim'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, tau=1, d=4.5, beta=-0.1, lr_bias=0.1, \
+	def simSess(self, img_l, img_r, lever, reward, tau=1, d=4, w_lim=0.001, beta=-0.1, lr_bias=0.1, \
 		mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
@@ -1357,7 +1358,9 @@ class SigmoidalMemoryBayesianModel(BayesianModel):
 					ll_history[2][chosen].append(0.1)
 					amnts_est[chosen] = outcome
 
-				weights = np.flip((1+np.exp(tau*(np.arange(len(ll_history[0][chosen]))-d)))**-1)
+				t = np.flip(np.arange(len(ll_history[0][chosen])))
+				# weights = (1+np.exp(tau*(t-d)))**-1
+				weights = (1-w_lim)/(1+np.exp(2*tau*(t-d))) + w_lim
 
 				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
 				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
@@ -1368,5 +1371,5 @@ class SigmoidalMemoryBayesianModel(BayesianModel):
 		return result, values
 
 	def fit(self, data, **kwargs):
-		con = {'type': 'ineq', 'fun': lambda x: ((1+np.exp(-x[2]*x[3]))**-1) - 0.95}
-		super().fit(data, method='SLSQP', cons=(con), **kwargs)
+		lim_upper = {'type': 'ineq', 'fun': lambda x: ((1+np.exp(-x[2]*x[3]))**-1) - 0.95}
+		super().fit(data, method='SLSQP', cons=(lim_upper), **kwargs)

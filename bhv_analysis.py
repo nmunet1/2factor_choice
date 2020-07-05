@@ -604,7 +604,7 @@ def winStayLoseShift(data, max_trials=400):
                 chosen = int(trial['right_image']-1)
                 unchosen = trial['left_image']-1
 
-            if not np.isnan(unchosen):
+            if trial['trialtype']==2:
                 # Update wsls history for chosen image
                 if last_outcome[chosen] >= 0:
                     date_log.append(date)
@@ -622,7 +622,7 @@ def winStayLoseShift(data, max_trials=400):
                     img_log.append(unchosen+1)
                     stay_log.append(0)
                     win_log.append(last_outcome[unchosen])
-                    gap_log.append(t-last_t[unchosen]-1)
+                    gap_log.append(t-last_t[unchosen])
 
                 last_outcome[unchosen] = -1
 
