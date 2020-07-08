@@ -175,7 +175,8 @@ class RescorlaWagnerModel(object):
 
 		return -self.simSess(img_l, img_r, lever, reward, mode='est', **param_dict)[0].sum()
 
-	def fit(self, data, params_init=None, verbose=False, method='L-BFGS-B', min_type='local', cons=(), **kwargs):
+	def fit(self, data, params_init=None, verbose=False, method='L-BFGS-B', min_type='local', \
+			cost_fn = None, cons=(), **kwargs):
 		'''
 		Fit model free parameters
 
@@ -185,6 +186,9 @@ class RescorlaWagnerModel(object):
 		'''
 		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
 		dates = data['date'].unique()
+
+		if cost_fn is None:
+			cost_fn = self.negLogLikelihood
 
 		for date in dates:
 			block = data[data['date']==date]
@@ -198,7 +202,7 @@ class RescorlaWagnerModel(object):
 
 			# fit data by minimizing negative log-likelihood of choice behavior given model and parameters
 			if min_type == 'local':
-				opt = minimize(self.negLogLikelihood, params, args=(param_labels, *self.data2numpy(block)), \
+				opt = minimize(cost_fn, params, args=(param_labels, *self.data2numpy(block)), \
 					method=method, tol=1e-4, bounds=bounds, constraints=cons, **kwargs)
 
 				if verbose or not opt.success:
@@ -209,7 +213,7 @@ class RescorlaWagnerModel(object):
 					self.params_fit.loc[date, param_labels] = list(opt.x)
 
 			elif min_type == 'global':
-				opt = basinhopping(self.negLogLikelihood, params, minimizer_kwargs={'method':method, \
+				opt = basinhopping(cost_fn, params, minimizer_kwargs={'method':method, \
 					'args':(param_labels, *self.data2numpy(block)), 'tol':1e-4, 'bounds':bounds, \
 					'constraints': cons})
 
@@ -571,7 +575,8 @@ class AlphaDecayRWModel(RescorlaWagnerModel):
 
 			# value update
 			if ii+1 < lever.size:
-				alpha_dis = alpha*np.exp(-tau*ii)
+				# alpha_dis = alpha*np.exp(-tau*ii)
+				alpha_dis = alpha*(x+1)**(-tau)
 				values[ii+1,:] = values[ii,:]
 				values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_dis, outcome)
 
@@ -1111,99 +1116,10 @@ class BayesianModel(RescorlaWagnerModel):
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
 		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
-		# likelihoods for each probability of reward (low, medium, high) for each image
-		ll = np.ones((3,9))
+		prior = np.ones((3,9))/3
+		p_win = np.array([0.7, 0.4, 0.1])
 
 		# expected reward contingencies for each image
-		probs_est = np.ones(9)*prob_map.mean()
-		amnts_est = np.ones(9)*amnt_map.mean()
-
-		for ii in range(lever.size):
-			values[ii,:] = amnts_est*probs_est
-
-			# simulated probability of choosing left
-			if np.isnan(img_l[ii]):
-				q_l = -np.inf
-			else:
-				q_l = values[ii, int(img_l[ii])-1]
-
-			if np.isnan(img_r[ii]):
-				q_r = -np.inf
-			else:
-				q_r = values[ii, int(img_r[ii])-1]
-
-			p_l = softmax(q_l, q_r, beta, lr_bias)
-
-			if mode == 'sim':
-				# simulate choice and reward outcome
-				if stats.bernoulli.rvs(p_l):
-					choice = -1
-					chosen = int(img_l[ii]) # chosen image index
-				else:
-					choice = 1
-					chosen = int(img_r[ii])
-
-				if lever[ii] == choice:
-					outcome = amnt_map[chosen-1] * reward[ii]
-				else:
-					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
-
-				result[ii,:] = [choice, outcome]
-
-			else:
-				# compute single-trial choice likelihood
-				if lever[ii] == -1:
-					result[ii] = np.log(p_l)
-					chosen = int(img_l[ii])
-				else:
-					result[ii] = np.log(1-p_l)
-					chosen = int(img_r[ii])
-				
-				outcome = amnt_map[chosen-1] * reward[ii]
-
-			# value update
-			if ii+1 < lever.size:
-				if outcome == 0:
-					ll[:,chosen-1] *= [0.3, 0.6, 0.9]
-				else:
-					amnts_est[chosen-1] = outcome
-					ll[:,chosen-1] *= [0.7, 0.4, 0.1]
-
-				post = ll[:,chosen-1]/ll[:,chosen-1].sum() # uniform prior, so not explicitly including prior in calculation
-				probs_est[chosen-1] = np.dot([0.7, 0.4, 0.1],post)
-
-		return result, values
-
-class LimitedMemoryBayesianModel(BayesianModel):
-	def __init__(self, tau=0.01, **kwargs):
-		super().__init__(**kwargs)
-		self.params_init['tau'] = tau
-		self.bounds['tau'] = (0,None)
-		self.params_fit['tau'] = tau
-		# self.params_init.update({'beta_mem': beta_mem, 'd': d})
-		# self.bounds.update({'beta_mem': (0, None), 'd': (1,None)})
-		# self.params_fit['beta_mem'] = np.nan
-		# self.params_fit['d'] = np.nan
-
-	def simSess(self, img_l, img_r, lever, reward, tau=0.01, beta=-0.1, lr_bias=0.1, \
-		mode='sim'):
-		'''
-		Estimates learned subjective values for each trial, given experimental data
-		
-		data: 		(DataFrame) experimental dataset
-		params:		(dict) free parameters
-		'''
-		values = np.zeros((lever.size,9))
-		if mode == 'sim':
-			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
-		elif mode == 'est':
-			result = np.zeros((lever.size,1)) # log-likelihoods
-
-		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
-		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
-
-		# expected amount of reward for each image
-		ll_history = [[[] for c in range(9)] for r in range(3)]
 		probs_est = np.ones(9)*prob_map.mean()
 		amnts_est = np.ones(9)*amnt_map.mean()
 
@@ -1253,36 +1169,112 @@ class LimitedMemoryBayesianModel(BayesianModel):
 			# value update
 			if ii+1 < lever.size:
 				if outcome == 0:
-					ll_history[0][chosen].append(0.3)
-					ll_history[1][chosen].append(0.6)
-					ll_history[2][chosen].append(0.9)
+					post = (1-p_win) * prior[:,chosen]
 				else:
-					ll_history[0][chosen].append(0.7)
-					ll_history[1][chosen].append(0.4)
-					ll_history[2][chosen].append(0.1)
 					amnts_est[chosen] = outcome
+					post = p_win * prior[:,chosen]
 
-				weights = np.flip(np.exp(-tau*np.arange(len(ll_history[0][chosen]))))
+				probs_est[chosen] = np.dot(p_win, post/post.sum())
+				prior[:, chosen] = post
 
-				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
-				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
-				ll_low = (np.array(ll_history[2][chosen])**weights).prod()
+		return result, values
 
-				probs_est[chosen] = (0.7*ll_high + 0.4*ll_med + 0.1*ll_low) / (ll_high + ll_med + ll_low)
+class LimitedMemoryBayesianModel(BayesianModel):
+	def __init__(self, omega=0.01, **kwargs):
+		super().__init__(**kwargs)
+		self.params_init['omega'] = omega
+		self.bounds['omega'] = (0,1)
+		self.params_fit['omega'] = omega
+
+	def simSess(self, img_l, img_r, lever, reward, omega=0.01, beta=-0.1, lr_bias=0.1, \
+		mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
+
+		prior = np.ones((3,9))/3
+		p_win = np.array([0.7, 0.4, 0.1])
+
+		# expected reward contingencies for each image
+		probs_est = np.ones(9)*prob_map.mean()
+		amnts_est = np.ones(9)*amnt_map.mean()
+
+		for ii in range(lever.size):
+			values[ii,:] = amnts_est*probs_est
+
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
+
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
+
+			p_l = softmax(q_l, q_r, beta, lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii])-1 # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])-1
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen] * reward[ii]
+				else:
+					outcome = amnt_map[chosen] * stats.bernoulli.rvs(prob_map[chosen])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])-1
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])-1
+				
+				outcome = amnt_map[chosen] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				if outcome == 0:
+					post = (1-p_win) * prior[:,chosen]**omega
+				else:
+					amnts_est[chosen] = outcome
+					post = p_win * prior[:,chosen]**omega
+
+				probs_est[chosen] = np.dot(p_win, post/post.sum())
+				prior[:, chosen] = post
 
 		return result, values
 
 class SigmoidalMemoryBayesianModel(BayesianModel):
-	def __init__(self, tau=1, d=4, w_lim=0.001, **kwargs):
+	def __init__(self, tau=1, d=4, **kwargs):
 		super().__init__(**kwargs)
 		self.params_init.update({'tau': tau, 'd': d, 'w_lim':w_lim})
 		self.bounds.update({'tau': (0, None), 'd': (1,None), 'w_lim':(0,0.95)})
 		self.params_fit['tau'] = np.nan
 		self.params_fit['d'] = np.nan
-		self.params_fit['w_lim'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, tau=1, d=4, w_lim=0.001, beta=-0.1, lr_bias=0.1, \
-		mode='sim'):
+	def simSess(self, img_l, img_r, lever, reward, tau=1, d=4, beta=-0.1, lr_bias=0.1, mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
@@ -1359,8 +1351,7 @@ class SigmoidalMemoryBayesianModel(BayesianModel):
 					amnts_est[chosen] = outcome
 
 				t = np.flip(np.arange(len(ll_history[0][chosen])))
-				# weights = (1+np.exp(tau*(t-d)))**-1
-				weights = (1-w_lim)/(1+np.exp(2*tau*(t-d))) + w_lim
+				weights = (1+np.exp(tau*(t-d)))**-1
 
 				ll_high = (np.array(ll_history[0][chosen])**weights).prod()
 				ll_med = (np.array(ll_history[1][chosen])**weights).prod()
@@ -1370,6 +1361,11 @@ class SigmoidalMemoryBayesianModel(BayesianModel):
 
 		return result, values
 
+	def smallMemoryBiasedNegLL(self, params, param_labels, *args):
+		d = params[param_labels.index('d')]
+		return self.negLogLikelihood(params, param_labels, *args) + 5*(d-1)
+    
 	def fit(self, data, **kwargs):
 		lim_upper = {'type': 'ineq', 'fun': lambda x: ((1+np.exp(-x[2]*x[3]))**-1) - 0.95}
-		super().fit(data, method='SLSQP', cons=(lim_upper), **kwargs)
+		return super().fit(data, method='SLSQP', cost_fn = self.smallMemoryBiasedNegLL, \
+			cons=(lim_upper), **kwargs)
