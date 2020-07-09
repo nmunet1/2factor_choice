@@ -574,10 +574,13 @@ def plotChoiceEvolution(data, compare='lr', sesstype=None, by=None, epoch_size=5
 
     return corr_w_final, labels
 
-def winStayLoseShift(data, max_trials=400):
+def winStayLoseShift(data, n_trials=400, epoch='early'):
     data = data[isvalid(data,forced=True,sets='new')]
-    if not max_trials is None:
-        data = data.groupby('date').head(max_trials)
+    if not n_trials is None:
+        if epoch == 'early':
+            data = data.groupby('date').head(n_trials)
+        elif epoch == 'late':
+            data = data.groupby('date').tail(n_trials)
 
     # Running logs
     date_log = [] # dates, in the form yyyy-mm-dd
@@ -634,3 +637,62 @@ def winStayLoseShift(data, max_trials=400):
         'stay': stay_log, 'last trial': win_log, 'gap_size': gap_log})
 
     return wsls_results
+
+def historyBias(data, n_trials=400, epoch='early'):
+    data = data[isvalid(data,forced=True,sets='new')]
+    if not n_trials is None:
+        if epoch == 'early':
+            data = data.groupby('date').head(n_trials)
+        elif epoch == 'late':
+            data = data.groupby('date').tail(n_trials)
+
+    hist_max = 5
+    results = pd.DataFrame()
+
+    dates = data['date'].unique()
+    for date in dates:
+        sess = data[data['date']==date]
+
+        outcomes = np.ones((hist_max,9))*-1
+        n_decisions = np.zeros((hist_max,9,2)) # last axis: 0 = lose, 1 = win
+        n_choose = np.zeros((hist_max,9,2)) # last axis: 0 = lose, 1 = win
+
+        for t in range(sess.shape[0]):
+            trial = sess.iloc[t]
+
+            if trial['lever'] == -1:
+                chosen = int(trial['left_image']-1)
+                unchosen = trial['right_image']-1
+            else:
+                chosen = int(trial['right_image']-1)
+                unchosen = trial['left_image']-1
+
+            if trial['trialtype']==2:
+                # Bin choices according to last n outcomes
+                for hist_depth in range(hist_max):
+                    # Update chosen image
+                    r = int(outcomes[hist_depth, chosen])
+                    if r >= 0:
+                        n_decisions[hist_depth, chosen, r] += 1
+                        n_choose[hist_depth, chosen, r] += 1
+
+                    # Update unchosen image
+                    unchosen = int(unchosen)
+                    r = int(outcomes[hist_depth, unchosen])
+                    if r >= 0:
+                        n_decisions[hist_depth, unchosen, r] += 1
+
+            # Update chosen outcome history
+            outcomes[:,chosen] = np.roll(outcomes[:,chosen], 1)
+            outcomes[0,chosen] = ~np.isnan(trial['if_reward'])
+
+        sess_results = pd.DataFrame({'date': date, \
+            'image': np.array([[img+1]*2 for img in range(9)]*hist_max).flatten(), \
+            'history_depth': np.array([[hd+1]*18 for hd in range(hist_max)]).flatten(), \
+            'past_outcome': np.array([0,1]*9*hist_max), \
+            'chosen': n_choose.flatten(), 'decisions': n_decisions.flatten(), \
+            'p(choose)': (n_choose/n_decisions).flatten()})
+
+        results = pd.concat((results, sess_results), ignore_index=True)
+
+    return results

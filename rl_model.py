@@ -14,7 +14,7 @@ class RescorlaWagnerModel(object):
 	Basic Rescorla-Wagner model with stochastic (softmax) choice and fixed left-right bias
 	'''
 
-	def __init__(self, alpha=0.01, beta=-0.1, lr_bias=0.1):
+	def __init__(self, q0=0.12, alpha=0.01, beta=-0.1, lr_bias=0.1):
 		'''
 		alpha: 		(float) value learning rate
 		beta: 		(float)softmax inverse temperature
@@ -24,6 +24,8 @@ class RescorlaWagnerModel(object):
 		self.bounds = {'alpha': (0,1), 'beta': (None,0), 'lr_bias': (None,None)} # parameter bounds
 		#self.params_fit = self.params_init.copy() # fitted parameter values
 		self.params_fit = pd.DataFrame(columns=['alpha','beta','lr_bias'])
+
+		self.q0 = q0
 
 		self.aic = None # Akaike Information Criterion of best fit model
 		self.data = None
@@ -87,7 +89,7 @@ class RescorlaWagnerModel(object):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -522,7 +524,7 @@ class AlphaDecayRWModel(RescorlaWagnerModel):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -596,7 +598,7 @@ class WinStayLoseShiftRWModel(RescorlaWagnerModel):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		last_outcome = np.ones(9)*0.5
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
@@ -682,7 +684,7 @@ class ChoiceKernelRWModel(RescorlaWagnerModel):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		choice_kernel = np.zeros(9)
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
@@ -777,7 +779,7 @@ class AlphaFreeAlphaForcedRWModel(RescorlaWagnerModel):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -860,7 +862,7 @@ class AlphaAmountRWModel(RescorlaWagnerModel):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -923,28 +925,22 @@ class AlphaAmountRWModel(RescorlaWagnerModel):
 
 		return result, values
 
-class AlphaOutcomeRWModel(RescorlaWagnerModel):
-	def __init__(self, alpha_win=0.01, alpha_lose=0.01, **kwargs):
+class PerseverationRWModel(RescorlaWagnerModel):
+	def __init__(self, pers=0.1, **kwargs):
 		super().__init__(**kwargs)
 
-		del self.params_init['alpha']
-		self.params_init.update({'alpha_win': alpha_win, 'alpha_lose': alpha_lose})
+		self.params_init['pers'] = pers
+		self.bounds['pers'] = (0,1)
+		self.params_fit['pers'] = np.nan
 
-		del self.bounds['alpha']
-		self.bounds.update({'alpha_win': (0,1), 'alpha_lose': (0,1)})
-
-		self.params_fit = self.params_fit.drop('alpha',1)
-		self.params_fit['alpha_win'] = np.nan
-		self.params_fit['alpha_lose'] = np.nan
-
-	def simSess(self, img_l, img_r, lever, reward, alpha_win=0.01, alpha_lose=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
+	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, pers=0.1, beta=-0.1, lr_bias=0.1, mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -999,9 +995,9 @@ class AlphaOutcomeRWModel(RescorlaWagnerModel):
 			if ii+1 < lever.size:
 				values[ii+1,:] = values[ii,:]
 				if outcome == 0:
-					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_lose, outcome)
+					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha*(1-pers), outcome)
 				else:
-					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_win, outcome)
+					values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha, outcome)
 
 		return result, values
 
@@ -1026,7 +1022,7 @@ class AmountLearningRWModel(RescorlaWagnerModel):
 		data: 		(DataFrame) experimental dataset
 		params:		(dict) free parameters
 		'''
-		values = np.zeros((lever.size,9))
+		values = np.ones((lever.size,9))*self.q0
 		probs = np.zeros(9)
 		amnts = np.zeros(9)
 		if mode == 'sim':
@@ -1117,10 +1113,11 @@ class BayesianModel(RescorlaWagnerModel):
 
 		prior = np.ones((3,9))/3
 		p_win = np.array([0.7, 0.4, 0.1])
+		amnts = np.array([0.5, 0.3, 0.1])
 
 		# expected reward contingencies for each image
-		probs_est = np.ones(9)*prob_map.mean()
-		amnts_est = np.ones(9)*amnt_map.mean()
+		probs_est = np.dot(p_win, prior)
+		amnts_est = np.dot(amnts, prior)
 
 		for ii in range(lever.size):
 			values[ii,:] = amnts_est*probs_est
@@ -1201,15 +1198,13 @@ class LimitedMemoryBayesianModel(BayesianModel):
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
 		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
-		prob_prior = np.ones((3,9))/3
+		prior = np.ones((3,9))/3
 		p_win = np.array([0.7, 0.4, 0.1])
-
-		amnt_prior = np.ones((3,9))/3
 		amnts = np.array([0.5, 0.3, 0.1])
 
 		# expected reward contingencies for each image
-		probs_est = np.dot(p_win, prob_prior)
-		amnts_est = np.dot(amnts, amnt_prior)
+		probs_est = np.dot(p_win, prior)
+		amnts_est = np.dot(amnts, prior)
 
 		for ii in range(lever.size):
 			values[ii,:] = amnts_est*probs_est
@@ -1257,10 +1252,10 @@ class LimitedMemoryBayesianModel(BayesianModel):
 			# value update
 			if ii+1 < lever.size:
 				if outcome == 0:
-					post = (1-p_win) * prob_prior[:,chosen]**omega
+					post = (1-p_win) * prior[:,chosen]**omega
 				else:
 					amnts_est[chosen] = outcome
-					post = p_win * prob_prior[:,chosen]**omega
+					post = p_win * prior[:,chosen]**omega
 
 				probs_est[chosen] = np.dot(p_win, post/post.sum())
 				prior[:, chosen] = post
@@ -1358,7 +1353,7 @@ class BiasedPriorsLMBModel(BayesianModel):
 					post = p_win * prob_prior[:,chosen]**omega
 
 				probs_est[chosen] = np.dot(p_win, post/post.sum())
-				prior[:, chosen] = post
+				prob_prior[:, chosen] = post
 
 		return result, values
 
