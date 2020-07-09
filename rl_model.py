@@ -575,8 +575,7 @@ class AlphaDecayRWModel(RescorlaWagnerModel):
 
 			# value update
 			if ii+1 < lever.size:
-				# alpha_dis = alpha*np.exp(-tau*ii)
-				alpha_dis = alpha*(x+1)**(-tau)
+				alpha_dis = alpha*np.exp(-tau*ii)
 				values[ii+1,:] = values[ii,:]
 				values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha_dis, outcome)
 
@@ -1184,10 +1183,9 @@ class LimitedMemoryBayesianModel(BayesianModel):
 		super().__init__(**kwargs)
 		self.params_init['omega'] = omega
 		self.bounds['omega'] = (0,1)
-		self.params_fit['omega'] = omega
+		self.params_fit['omega'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, omega=0.01, beta=-0.1, lr_bias=0.1, \
-		mode='sim'):
+	def simSess(self, img_l, img_r, lever, reward, omega=0.01, beta=-0.1, lr_bias=0.1, mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
@@ -1203,12 +1201,15 @@ class LimitedMemoryBayesianModel(BayesianModel):
 		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
 		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
 
-		prior = np.ones((3,9))/3
+		prob_prior = np.ones((3,9))/3
 		p_win = np.array([0.7, 0.4, 0.1])
 
+		amnt_prior = np.ones((3,9))/3
+		amnts = np.array([0.5, 0.3, 0.1])
+
 		# expected reward contingencies for each image
-		probs_est = np.ones(9)*prob_map.mean()
-		amnts_est = np.ones(9)*amnt_map.mean()
+		probs_est = np.dot(p_win, prob_prior)
+		amnts_est = np.dot(amnts, amnt_prior)
 
 		for ii in range(lever.size):
 			values[ii,:] = amnts_est*probs_est
@@ -1256,10 +1257,105 @@ class LimitedMemoryBayesianModel(BayesianModel):
 			# value update
 			if ii+1 < lever.size:
 				if outcome == 0:
-					post = (1-p_win) * prior[:,chosen]**omega
+					post = (1-p_win) * prob_prior[:,chosen]**omega
 				else:
 					amnts_est[chosen] = outcome
-					post = p_win * prior[:,chosen]**omega
+					post = p_win * prob_prior[:,chosen]**omega
+
+				probs_est[chosen] = np.dot(p_win, post/post.sum())
+				prior[:, chosen] = post
+
+		return result, values
+
+class BiasedPriorsLMBModel(BayesianModel):
+	def __init__(self, omega=0.01, rho=1, **kwargs):
+		super().__init__(**kwargs)
+		self.params_init['omega'] = omega
+		self.bounds['omega'] = (0,1)
+		self.params_fit['omega'] = np.nan
+
+		self.params_init['rho'] = rho
+		self.bounds['rho'] = (0,None)
+		self.params_fit['rho'] = np.nan
+
+	def simSess(self, img_l, img_r, lever, reward, omega=0.01, rho=1, beta=-0.1, lr_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.zeros((lever.size,9))
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
+
+		prob_prior = np.ones((3,9))/3
+		prob_prior[0,:] *= 2*rho/(rho+1)
+		prob_prior[2,:] *= 2/(rho+1)
+		p_win = np.array([0.7, 0.4, 0.1])
+
+		amnt_prior = np.ones((3,9))/3
+		amnts = np.array([0.5, 0.3, 0.1])
+
+		# expected reward contingencies for each image
+		probs_est = np.dot(p_win, prob_prior)
+		amnts_est = np.dot(amnts, amnt_prior)
+
+		for ii in range(lever.size):
+			values[ii,:] = amnts_est*probs_est
+
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				q_l = -np.inf
+			else:
+				q_l = values[ii, int(img_l[ii])-1]
+
+			if np.isnan(img_r[ii]):
+				q_r = -np.inf
+			else:
+				q_r = values[ii, int(img_r[ii])-1]
+
+			p_l = softmax(q_l, q_r, beta, lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = int(img_l[ii])-1 # chosen image index
+				else:
+					choice = 1
+					chosen = int(img_r[ii])-1
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen] * reward[ii]
+				else:
+					outcome = amnt_map[chosen] * stats.bernoulli.rvs(prob_map[chosen])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = int(img_l[ii])-1
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = int(img_r[ii])-1
+				
+				outcome = amnt_map[chosen] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				if outcome == 0:
+					post = (1-p_win) * prob_prior[:,chosen]**omega
+				else:
+					amnts_est[chosen] = outcome
+					post = p_win * prob_prior[:,chosen]**omega
 
 				probs_est[chosen] = np.dot(p_win, post/post.sum())
 				prior[:, chosen] = post
