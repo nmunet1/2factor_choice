@@ -51,7 +51,7 @@ def loadData(filt_sess=True):
                     
     return data
 
-def isvalid(data, forced=False, sets='new'):
+def isvalid(data, forced=False, sets='new', return_data=False):
     '''
     Sequence of Booleans denoting whether each trial in data is valid for analysis
 
@@ -80,7 +80,10 @@ def isvalid(data, forced=False, sets='new'):
     else:
         raise ValueError
     
-    return valid
+    if return_data:
+        return data[valid]
+    else:
+        return valid
 
 def simRollingAvg(block_data, block_sims, win_size=50, min_trials=10):
     '''
@@ -398,6 +401,49 @@ def plotSession(data, date, series1='perf', series2=None, win_step=10, **kwargs)
         ax2.set_ylabel(ylabel2,color=colors2,rotation=270)
         ax2.set_ylim(ylim2)
 
+def plotImageLearningCurves(data, dates=None, win_size=20, min_trials=1, win_step=1, trials='rel'):
+    if not dates is None:
+        data = data[data['date'].isin(dates)]
+    data = data[isvalid(data, sets='new')]
+    max_trials=200
+
+    amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+    prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])  
+
+    df = pd.DataFrame(columns=['date', 'trial', 'p(reward)', 'amount', 'EV', 'p(choose)'])
+
+    for date in data['date'].unique():
+        for img in np.arange(1,10):
+            sess_img_data = data[(data['date']==date) & \
+                ((data['left_image']==img) | (data['right_image']==img))]
+
+            a = amnt_map[int(img)-1]
+            p = prob_map[int(img)-1]
+
+            img_loc = (sess_img_data['left_image']==img).replace({True:-1, False:1})
+            pchoose = (img_loc == sess_img_data['lever']).reset_index(drop=True).head(max_trials)
+
+            pstable = pchoose.tail(100).mean()
+            pchoose = pchoose.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
+
+            df2 = pd.DataFrame({'date': date, 'trial': pchoose.index.to_numpy()+1, \
+                'p(reward)': p, 'amount': a, 'EV': round(p*a, 2), \
+                'p(choose)': pchoose.to_numpy(), 'pstable': pstable})
+            df = pd.concat((df, df2), axis=0, ignore_index=True)
+
+    # plt.figure()
+    # sns.lineplot(x='trial', y='p(choose)', hue='EV', data=df, palette=sns.color_palette('coolwarm_r',9))
+    # plt.legend(bbox_to_anchor=(1.05,1), loc=2, borderaxespad=0)
+    # plt.xlabel('Trial Offered')
+
+    # plt.figure()
+    # sns.lineplot(x='trial', y='pct_stable', hue='EV', data=df, palette=sns.color_palette('coolwarm_r',9), ci=None)
+    # plt.legend(bbox_to_anchor=(1.05,1), loc=2, borderaxespad=0)
+    # plt.xlabel('Trial Offered')
+    # plt.ylabel('Log Odds Rel. to Stable')
+
+    return df
+
 def plotChoiceMat(data, compare='lr', sesstype=None, win_size=200, start=200, end='back', annot=True, \
     model_params={}):
     '''
@@ -638,61 +684,118 @@ def winStayLoseShift(data, n_trials=400, epoch='early'):
 
     return wsls_results
 
-def historyBias(data, n_trials=400, epoch='early'):
-    data = data[isvalid(data,forced=True,sets='new')]
-    if not n_trials is None:
-        if epoch == 'early':
-            data = data.groupby('date').head(n_trials)
-        elif epoch == 'late':
-            data = data.groupby('date').tail(n_trials)
+def histBiasPP(data):
+    data = data[isvalid(data, forced=True, sets='new')]
+    data = data.replace({'left_prob_level': {1: 0.7, 2: 0.4, 3: 0.1}, \
+        'right_prob_level': {1: 0.7, 2: 0.4, 3: 0.1}, \
+        'left_amnt_level': {1: 0.5, 2: 0.3, 3: 0.1}, \
+        'right_amnt_level': {1: 0.5, 2: 0.3, 3: 0.1}, \
+        'if_reward': {np.nan: 0}})
 
-    hist_max = 5
-    results = pd.DataFrame()
+    max_lag = 10
+    max_prev_choice = 8
 
-    dates = data['date'].unique()
-    for date in dates:
-        sess = data[data['date']==date]
+    col_labels = ['date', 'trial', 'prob', 'amnt', 'alt_prob', 'alt_amnt', 'right_side', 'lag1_gap']
+    col_labels += ['lag%s_outcome' % (lag+1) for lag in range(max_lag)]
+    col_labels += ['prev_choice'] + ['prev%s_choice' % (n+1) for n in range(1,max_prev_choice)]
+    col_labels += ['prev_outcome', 'choice']
 
-        outcomes = np.ones((hist_max,9))*-1
-        n_decisions = np.zeros((hist_max,9,2)) # last axis: 0 = lose, 1 = win
-        n_choose = np.zeros((hist_max,9,2)) # last axis: 0 = lose, 1 = win
+    data_pp = np.ndarray(((data['trialtype']==2).sum()*2, len(col_labels)), dtype=object)
 
-        for t in range(sess.shape[0]):
-            trial = sess.iloc[t]
+    ii = 0
+    for date in data['date'].unique():
+        sess_data = data[data['date']==date]
+        outcome_hist = np.full((9, max_lag), np.nan)
+        lag1_trial = np.full(9, np.nan)
+        prev_outcome = np.full(9, np.nan)
+        prev_choice = np.full((9,max_prev_choice), np.nan)
 
-            if trial['lever'] == -1:
-                chosen = int(trial['left_image']-1)
-                unchosen = trial['right_image']-1
+        for jj in range(sess_data.shape[0]):
+            row = sess_data.iloc[jj,:]
+            if row['trialtype'] == 2:
+                # add left image info
+                img_idx = int(row['left_image']-1)
+
+                data_pp[ii,0] = date
+                data_pp[ii,1] = row['trial']
+                data_pp[ii,2] = row['left_prob_level']
+                data_pp[ii,3] = row['left_amnt_level']
+                # data_pp[ii,4] = round(row['left_prob_level']*row['left_amnt_level'],2)
+                # data_pp[ii,5] = round(row['right_prob_level']*row['right_amnt_level'],2)
+                data_pp[ii,4] = row['right_prob_level']
+                data_pp[ii,5] = row['right_amnt_level']
+                data_pp[ii,6] = 0
+                data_pp[ii,7] = jj - lag1_trial[img_idx]
+                data_pp[ii, 8:8+max_lag] = outcome_hist[img_idx,:]
+                data_pp[ii,-(2+max_prev_choice):-2] = prev_choice[img_idx,:]
+                data_pp[ii,-2] = prev_outcome[img_idx]
+
+                prev_choice[img_idx,:] = np.roll(prev_choice[img_idx,:],1)
+
+                if row['lever'] == -1:
+                    outcome_hist[img_idx,:] = np.roll(outcome_hist[img_idx,:],1)
+                    outcome_hist[img_idx,0] = row['if_reward']
+
+                    data_pp[ii,-1] = 1
+                    prev_choice[img_idx,0] = 1
+                else:
+                    data_pp[ii,-1] = 0
+                    prev_choice[img_idx,0] = 0
+
+                prev_outcome[img_idx] = row['if_reward']
+                lag1_trial[img_idx] = jj
+                ii += 1
+
+
+                # add right image info
+                img_idx = int(row['right_image']-1)
+
+                data_pp[ii,0] = date
+                data_pp[ii,1] = row['trial']
+                data_pp[ii,2] = row['right_prob_level']
+                data_pp[ii,3] = row['right_amnt_level']
+                # data_pp[ii,4] = round(row['right_prob_level']*row['right_amnt_level'],2)
+                # data_pp[ii,5] = round(row['left_prob_level']*row['left_amnt_level'],2)
+                data_pp[ii,4] = row['left_prob_level']
+                data_pp[ii,5] = row['left_amnt_level']
+                data_pp[ii,6] = 1
+                data_pp[ii,7] = jj - lag1_trial[img_idx]
+                data_pp[ii, 8:8+max_lag] = outcome_hist[img_idx,:]
+                data_pp[ii,-(2+max_prev_choice):-2] = prev_choice[img_idx,:]
+                data_pp[ii,-2] = prev_outcome[img_idx]
+
+                prev_choice[img_idx,:] = np.roll(prev_choice[img_idx,:],1)
+
+                if row['lever'] == 1:
+                    outcome_hist[img_idx,:] = np.roll(outcome_hist[img_idx,:],1)
+                    outcome_hist[img_idx,0] = row['if_reward']
+
+                    data_pp[ii,-1] = 1
+                    prev_choice[img_idx,0] = 1
+                else:
+                    data_pp[ii,-1] = 0
+                    prev_choice[img_idx,0] = 0
+
+                prev_outcome[img_idx] = row['if_reward']
+                lag1_trial[img_idx] = jj
+                ii += 1
+
             else:
-                chosen = int(trial['right_image']-1)
-                unchosen = trial['left_image']-1
+                if np.isfinite(row['left_image']):
+                    img_idx = int(row['left_image']-1)
+                else:
+                    img_idx = int(row['right_image']-1)
 
-            if trial['trialtype']==2:
-                # Bin choices according to last n outcomes
-                for hist_depth in range(hist_max):
-                    # Update chosen image
-                    r = int(outcomes[hist_depth, chosen])
-                    if r >= 0:
-                        n_decisions[hist_depth, chosen, r] += 1
-                        n_choose[hist_depth, chosen, r] += 1
+                outcome_hist[img_idx,:] = np.roll(outcome_hist[img_idx,:],1)
+                outcome_hist[img_idx,0] = row['if_reward']
 
-                    # Update unchosen image
-                    unchosen = int(unchosen)
-                    r = int(outcomes[hist_depth, unchosen])
-                    if r >= 0:
-                        n_decisions[hist_depth, unchosen, r] += 1
+                prev_choice[img_idx,:] = np.roll(prev_choice[img_idx,:],1)
+                prev_choice[img_idx,0] = 1
 
-            # Update chosen outcome history
-            outcomes[:,chosen] = np.roll(outcomes[:,chosen], 1)
-            outcomes[0,chosen] = ~np.isnan(trial['if_reward'])
+                prev_outcome[img_idx] = row['if_reward']
+                lag1_trial[img_idx] = jj
 
-        sess_results = pd.DataFrame({'date': date, \
-            'image': np.array([[img+1]*2 for img in range(9)]*hist_max).flatten(), \
-            'history_depth': np.array([[hd+1]*18 for hd in range(hist_max)]).flatten(), \
-            'past_outcome': np.array([0,1]*9*hist_max), \
-            'chosen': n_choose.flatten(), 'decisions': n_decisions.flatten(), \
-            'p(choose)': (n_choose/n_decisions).flatten()})
+    # calculate EV
+    # data_pp[:,5] = -np.diff(data_pp[:,4:6]).flatten()
 
-        results = pd.concat((results, sess_results), ignore_index=True)
-
-    return results
+    return pd.DataFrame(data_pp, columns=col_labels)

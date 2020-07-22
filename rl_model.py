@@ -54,7 +54,7 @@ class RescorlaWagnerModel(object):
 		return value_old + rate * (feedback - value_old)
 
 	def simulate(self, data, mode='sim', merge_data=False):
-		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
+		data = bhv.isvalid(data, forced=True, sets='new', return_data=True) # filter out invalid trials and unwanted blocks
 		sim_results = pd.DataFrame()
 
 		cols = ['value1','value2','value3','value4','value5','value6','value7','value8','value9']
@@ -147,7 +147,7 @@ class RescorlaWagnerModel(object):
 		return result, values
 
 	def bootstrap(self, data, n_iter=100, verbose=False):
-		data = data[bhv.isvalid(data, forced=True, sets='new')]
+		data = bhv.isvalid(data, forced=True, sets='new', return_data=True)
 		results = pd.DataFrame()
 
 		for n in range(n_iter):
@@ -184,7 +184,7 @@ class RescorlaWagnerModel(object):
 		params_init: 	(dict) initial guess for free parameter values
 		verbose: 		(bool) if True, display optimization results
 		'''
-		data = data[bhv.isvalid(data, forced=True, sets='new')] # filter out invalid trials and unwanted blocks
+		data = bhv.isvalid(data, forced=True, sets='new', return_data=True) # filter out invalid trials and unwanted blocks
 		dates = data['date'].unique()
 
 		if cost_fn is None:
@@ -237,7 +237,7 @@ class RescorlaWagnerModel(object):
 		'''
 		Returns DataFrame of AICs for each session
 		'''
-		data = data[bhv.isvalid(data, forced=True, sets='new')]
+		data = bhv.isvalid(data, forced=True, sets='new', return_data=True)
 		if not n_trials is None:
 			if selection == 'first':
 				data = data.groupby('date').head(n_trials)
@@ -267,7 +267,7 @@ class RescorlaWagnerModel(object):
 	def plotEVLearning(self, data, date, win_size=50, min_trials=10, win_step=10):
 		block_data = data[data['date']==date]
 		block_data = block_data[bhv.isvalid(block_data, sets='new')]
-		block_sims = self.sim_results.loc[block_data.index]
+		# block_sims = self.sim_results.loc[block_data.index]
 
 		left_amnt = block_data['left_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
 		left_prob = block_data['left_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
@@ -276,21 +276,23 @@ class RescorlaWagnerModel(object):
 
 		optimal = (left_amnt*left_prob > right_amnt*right_prob).replace({True: -1.0, False: 1.0})
 
-		sim_opt = block_sims.set_index('iter',append=True)['sim_choice'].unstack('iter')
-		sim_opt = sim_opt.apply(lambda x: x == optimal, axis=0).reset_index(drop=True)
-		sim_opt = sim_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
+		# sim_opt = block_sims.set_index('iter',append=True)['sim_choice'].unstack('iter')
+		# sim_opt = sim_opt.apply(lambda x: x == optimal, axis=0).reset_index(drop=True)
+		# sim_opt = sim_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
 
 		real_opt = (block_data['lever'] == optimal).reset_index(drop=True)
 		real_opt = real_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
 
-		all_opt = pd.concat((real_opt, sim_opt.stack().reset_index('iter',drop=True)), \
-			axis=1).set_axis(['Monkey C', 'Model'], axis=1)
+		# all_opt = pd.concat((real_opt, sim_opt.stack().reset_index('iter',drop=True)), \
+		# 	axis=1).set_axis(['Monkey C', 'Model'], axis=1)
+
 
 		plt.figure()
 		plt.axhline(0.5, color=[0.75, 0.75, 0.75], ls='--')
 		plt.axhline(0.8, color=[0.75, 0.75, 0.75], ls='--')
 
-		sns.lineplot(data=all_opt, palette={'Monkey C': 'grey', 'Model': 'red'}, dashes=False)
+		sns.lineplot(data=real_opt, color='red', dashes=False)
+		# sns.lineplot(data=all_opt, palette={'Monkey C': 'grey', 'Model': 'red'}, dashes=False)
 
 		plt.title(date)
 		plt.xlabel('Free Trial')
@@ -299,7 +301,7 @@ class RescorlaWagnerModel(object):
 
 	def plotImageLearningCurve(self, data, date, images=np.arange(1,10), win_size=50, min_trials=10, win_step=10):
 		block_data = data[data['date']==date]
-		block_data = block_data[bhv.isvalid(block_data, sets='new')]
+		block_data = bhv.isvalid(block_data, sets='new', return_data=True)
 
 		for img in images:
 			img_data = block_data[(block_data['left_image']==img) | (block_data['right_image']==img)]
@@ -335,7 +337,7 @@ class RescorlaWagnerModel(object):
 
 	def plotValueLearning(self, data, date, x_label='Updates'):
 		sess_data = data[data['date']==date]
-		sess_data = sess_data[bhv.isvalid(sess_data, forced=True, sets='new')]
+		sess_data = bhv.isvalid(sess_data, forced=True, sets='new', return_data=True)
 
 		sims = self.sim_results.loc[sess_data.index]
 		est = self.simulate(sess_data, mode='est')
@@ -1305,7 +1307,7 @@ class FreeForcedChoiceLMBModel(LimitedMemoryBayesianModel):
 		self.bounds['gamma'] = (0,None)
 		self.params_fit['gamma'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, omega=0.01, gamma=1, beta=-0.1, lr_bias=0.1, ,\
+	def simSess(self, img_l, img_r, lever, reward, omega=0.01, gamma=1, beta=-0.1, lr_bias=0.1, \
 		mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
@@ -1483,7 +1485,7 @@ class ChoiceKernelLMBModel(LimitedMemoryBayesianModel):
 	def __init__(self, alpha=0.01, choice_bias=0.1, **kwargs):
 		super().__init__(**kwargs)
 
-		self.params_init.update({'alpha': alpha_choice, 'choice_bias': choice_bias})
+		self.params_init.update({'alpha': alpha, 'choice_bias': choice_bias})
 
 		self.bounds['alpha'] = (0,1)
 		self.bounds['choice_bias'] = (0,None)
@@ -1491,7 +1493,7 @@ class ChoiceKernelLMBModel(LimitedMemoryBayesianModel):
 		self.params_fit['alpha'] = np.nan
 		self.params_fit['choice_bias'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, omega=0.01, alpha=0.01, beta=-0.1, lr_bias=0.1, \
+	def simSess(self, img_l, img_r, lever, reward, omega=0.01, alpha=0.01, choice_bias=0.1, beta=-0.1, lr_bias=0.1, \
 		mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
@@ -1533,11 +1535,11 @@ class ChoiceKernelLMBModel(LimitedMemoryBayesianModel):
 			if np.isnan(img_r[ii]):
 				idx_r = None
 				q_r = -np.inf
-				c_l = -np.inf
+				c_r = -np.inf
 			else:
-				idx_l = int(img_r[ii])-1
+				idx_r = int(img_r[ii])-1
 				q_r = values[ii, idx_r]
-				c_l = choice_kernel[idx_r]
+				c_r = choice_kernel[idx_r]
 
 			p_l = softmax(q_l, q_r, beta, c_r-c_l+lr_bias)
 
