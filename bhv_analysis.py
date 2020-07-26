@@ -49,7 +49,7 @@ def loadData(filt_sess=True):
                         
                         data = pd.concat([data,sess_data],ignore_index=True) # join session data with master dataset
                     
-    return data
+    return data.sort_values(by=['date', 'trial']).reset_index(drop=True)
 
 def isvalid(data, forced=False, sets='new', return_data=False):
     '''
@@ -402,39 +402,56 @@ def plotSession(data, date, series1='perf', series2=None, win_step=10, **kwargs)
         ax2.set_ylim(ylim2)
 
 def plotImageLearningCurves(data, dates=None, win_size=20, min_trials=1, win_step=1, trials='rel'):
-    if not dates is None:
-        data = data[data['date'].isin(dates)]
-    data = data[isvalid(data, sets='new')]
-    max_trials=200
+    data = isvalid(data, forced=True, sets='new', return_data=True)
+    if dates is None:
+        dates = data['date'].unique()
 
     amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
     prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])  
 
-    df = pd.DataFrame(columns=['date', 'trial', 'p(reward)', 'amount', 'EV', 'p(choose)'])
+    # df = pd.DataFrame(columns=['date', 'trial', 'p(reward)', 'amount', 'EV', 'p(choose)'])
+    df = pd.DataFrame(columns=['date', 'update', 'p_reward', 'amount', 'EV', 'p_choose'])
 
-    for date in data['date'].unique():
+    for date in dates:
         for img in np.arange(1,10):
+            # trials on date where img is offered
             sess_img_data = data[(data['date']==date) & \
                 ((data['left_image']==img) | (data['right_image']==img))]
 
-            a = amnt_map[int(img)-1]
-            p = prob_map[int(img)-1]
+            a = amnt_map[int(img)-1] # amount of reward
+            p = prob_map[int(img)-1] # probability of reward
 
+            # image location: Left = -1, Right = 1
             img_loc = (sess_img_data['left_image']==img).replace({True:-1, False:1})
-            pchoose = (img_loc == sess_img_data['lever']).reset_index(drop=True).head(max_trials)
 
-            pstable = pchoose.tail(100).mean()
-            pchoose = pchoose.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
+            # series of Bool indicating whether image location matches choice
+            update = (img_loc==sess_img_data['lever'])
 
-            df2 = pd.DataFrame({'date': date, 'trial': pchoose.index.to_numpy()+1, \
-                'p(reward)': p, 'amount': a, 'EV': round(p*a, 2), \
-                'p(choose)': pchoose.to_numpy(), 'pstable': pstable})
+            trials = sess_img_data[sess_img_data['trialtype']==2]['trial']
+
+            update_trials = sess_img_data[update]['trial'].to_list()
+            update_trials.insert(0, -1)
+            if update_trials[-1] <= trials.iloc[-1]:
+                update_trials.append(trials.iloc[-1]+1)
+
+            # pstable = choose.tail(100).mean() # stable p_choose
+            pchoose = update[sess_img_data['trialtype']==2]
+            pchoose = pchoose.rolling(window=20, min_periods=1).mean().rename('p_choose')
+
+            # bin pchoose estimates by most recent update and average within bin
+            pchoose = pd.concat((pchoose, pd.cut(trials, update_trials, right=False, \
+                                       labels=np.arange(len(update_trials)-1)).rename('update')), axis=1)
+            pchoose = pchoose.groupby('update').mean().interpolate()
+
+            df2 = pd.DataFrame({'date': date, 'update': pchoose.index, \
+                'p_reward': p, 'amount': a, 'EV': round(p*a, 2), 'p_choose': pchoose['p_choose']})
             df = pd.concat((df, df2), axis=0, ignore_index=True)
 
-    # plt.figure()
-    # sns.lineplot(x='trial', y='p(choose)', hue='EV', data=df, palette=sns.color_palette('coolwarm_r',9))
-    # plt.legend(bbox_to_anchor=(1.05,1), loc=2, borderaxespad=0)
-    # plt.xlabel('Trial Offered')
+    plt.figure()
+    sns.lineplot(x='update', y='p_choose', hue='EV', data=df, palette=sns.color_palette('coolwarm_r',9))
+    plt.legend(bbox_to_anchor=(1.05,1), loc=2, borderaxespad=0)
+    plt.xlabel('Value Updates')
+    plt.ylabel('p(Choose)')
 
     # plt.figure()
     # sns.lineplot(x='trial', y='pct_stable', hue='EV', data=df, palette=sns.color_palette('coolwarm_r',9), ci=None)
