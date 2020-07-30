@@ -78,6 +78,7 @@ class RescorlaWagnerModel(object):
 
 		if merge_data:
 			sim_results = pd.concat((data, sim_results), axis=1, sort=False)
+			sim_results = sim_results.drop(columns='lever').rename(columns={'sim_choice': 'lever'})
 
 		return sim_results
 
@@ -621,15 +622,15 @@ class AlphaDecayRWModel(RescorlaWagnerModel):
 
 		return result, values
 
-class WinStayLoseShiftRWModel(RescorlaWagnerModel):
-	def __init__(self, wsls_bias=0.1, **kwargs):
+class HysteresisRWModel(RescorlaWagnerModel):
+	def __init__(self, xi=0.1, **kwargs):
 		super().__init__(**kwargs)
 
-		self.params_init['wsls_bias'] = wsls_bias
-		self.bounds['wsls_bias'] = (0,None)
-		self.params_fit['wsls_bias'] = np.nan
+		self.params_init['xi'] = xi
+		self.bounds['xi'] = (0,None)
+		self.params_fit['xi'] = np.nan
 
-	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, beta=-0.1, lr_bias=0.1, wsls_bias=0.1, mode='sim'):
+	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, beta=-0.1, lr_bias=0.1, xi=0.1, mode='sim'):
 		'''
 		Estimates learned subjective values for each trial, given experimental data
 		
@@ -637,7 +638,7 @@ class WinStayLoseShiftRWModel(RescorlaWagnerModel):
 		params:		(dict) free parameters
 		'''
 		values = np.ones((lever.size,9))*self.q0
-		last_outcome = np.ones(9)*0.5
+		last_action = np.zeros(9)
 		if mode == 'sim':
 			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
 		elif mode == 'est':
@@ -650,37 +651,39 @@ class WinStayLoseShiftRWModel(RescorlaWagnerModel):
 		for ii in range(lever.size):
 			# simulated probability of choosing left
 			if np.isnan(img_l[ii]):
+				idx_l = None
 				q_l = -np.inf
+				xi_l = 0
 			else:
-				q_l = values[ii, int(img_l[ii])-1]
+				idx_l = int(img_l[ii])-1
+				q_l = values[ii, idx_l]
+				xi_l = xi*last_action[idx_l]
 
 			if np.isnan(img_r[ii]):
+				idx_r = None
 				q_r = -np.inf
+				xi_r = 0
 			else:
-				q_r = values[ii, int(img_r[ii])-1]
+				q_r = values[ii, int(img_r[ii]-1)]
+				xi_r = xi*last_action[idx_l]
 
-			bias = lr_bias
-			if not (np.isnan(img_l[ii]) or np.isnan(img_r[ii])):
-				if last_outcome[int(img_l[ii])-1] > last_outcome[int(img_r[ii])-1]:
-					bias -= wsls_bias
-				elif last_outcome[int(img_l[ii])-1] < last_outcome[int(img_r[ii])-1]:
-					bias += wsls_bias
-
-			p_l = softmax(q_l, q_r, beta, bias)
+			p_l = softmax(q_l, q_r, beta, lr_bias-xi_l+xi_r)
 
 			if mode == 'sim':
 				# simulate choice and reward outcome
 				if stats.bernoulli.rvs(p_l):
 					choice = -1
-					chosen = int(img_l[ii]) # chosen image index
+					chosen = idx_l # chosen image index
+					unchosen = idx_r
 				else:
 					choice = 1
-					chosen = int(img_r[ii])
+					chosen = idx_r
+					unchosen = idx_l
 
 				if lever[ii] == choice:
-					outcome = amnt_map[chosen-1] * reward[ii]
+					outcome = amnt_map[chosen] * reward[ii]
 				else:
-					outcome = amnt_map[chosen-1] * stats.bernoulli.rvs(prob_map[chosen-1])
+					outcome = amnt_map[chosen] * stats.bernoulli.rvs(prob_map[chosen])
 
 				result[ii,:] = [choice, outcome]
 
@@ -688,18 +691,22 @@ class WinStayLoseShiftRWModel(RescorlaWagnerModel):
 				# compute single-trial choice likelihood
 				if lever[ii] == -1:
 					result[ii] = np.log(p_l)
-					chosen = int(img_l[ii])
+					chosen = idx_l
+					unchosen = idx_r
 				else:
 					result[ii] = np.log(1-p_l)
-					chosen = int(img_r[ii])
+					chosen = idx_r
+					unchosen = idx_l
 				
-				outcome = amnt_map[chosen-1] * reward[ii]
+				outcome = amnt_map[chosen] * reward[ii]
 
 			# value update
 			if ii+1 < lever.size:
 				values[ii+1,:] = values[ii,:]
-				values[ii+1, chosen-1] = self.learningRule(values[ii+1, chosen-1], alpha, outcome)
-				last_outcome[chosen-1] = outcome > 0
+				values[ii+1, chosen] = self.learningRule(values[ii+1, chosen], alpha, outcome)
+				last_action[chosen] = 1
+				if not unchosen is None:
+					last_action[unchosen] = 0
 
 		return result, values
 

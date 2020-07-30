@@ -702,7 +702,7 @@ def winStayLoseShift(data, n_trials=400, epoch='early'):
     return wsls_results
 
 def histBiasPP(data):
-    data = data[isvalid(data, forced=True, sets='new')]
+    data = isvalid(data, forced=True, sets='new', return_data=True)
     data = data.replace({'left_prob_level': {1: 0.7, 2: 0.4, 3: 0.1}, \
         'right_prob_level': {1: 0.7, 2: 0.4, 3: 0.1}, \
         'left_amnt_level': {1: 0.5, 2: 0.3, 3: 0.1}, \
@@ -712,7 +712,7 @@ def histBiasPP(data):
     max_lag = 10
     max_prev_choice = 8
 
-    col_labels = ['date', 'trial', 'prob', 'amnt', 'alt_prob', 'alt_amnt', 'right_side', 'lag1_gap']
+    col_labels = ['date', 'trial', 'epoch', 'prob', 'amnt', 'alt_prob', 'alt_amnt', 'right_side', 'lag1_gap']
     col_labels += ['lag%s_outcome' % (lag+1) for lag in range(max_lag)]
     col_labels += ['prev_choice'] + ['prev%s_choice' % (n+1) for n in range(1,max_prev_choice)]
     col_labels += ['prev_outcome', 'choice']
@@ -722,6 +722,7 @@ def histBiasPP(data):
     ii = 0
     for date in data['date'].unique():
         sess_data = data[data['date']==date]
+
         outcome_hist = np.full((9, max_lag), np.nan)
         lag1_trial = np.full(9, np.nan)
         prev_outcome = np.full(9, np.nan)
@@ -735,15 +736,21 @@ def histBiasPP(data):
 
                 data_pp[ii,0] = date
                 data_pp[ii,1] = row['trial']
-                data_pp[ii,2] = row['left_prob_level']
-                data_pp[ii,3] = row['left_amnt_level']
+
+                if jj < 400:
+                    data_pp[ii,2] = 'early'
+                elif sess_data.shape[0] - jj < 400:
+                    data_pp[ii,2] = 'late'
+
+                data_pp[ii,3] = row['left_prob_level']
+                data_pp[ii,4] = row['left_amnt_level']
                 # data_pp[ii,4] = round(row['left_prob_level']*row['left_amnt_level'],2)
                 # data_pp[ii,5] = round(row['right_prob_level']*row['right_amnt_level'],2)
-                data_pp[ii,4] = row['right_prob_level']
-                data_pp[ii,5] = row['right_amnt_level']
-                data_pp[ii,6] = 0
-                data_pp[ii,7] = jj - lag1_trial[img_idx]
-                data_pp[ii, 8:8+max_lag] = outcome_hist[img_idx,:]
+                data_pp[ii,5] = row['right_prob_level']
+                data_pp[ii,6] = row['right_amnt_level']
+                data_pp[ii,7] = 0
+                data_pp[ii,8] = jj - lag1_trial[img_idx]
+                data_pp[ii, 9:9+max_lag] = outcome_hist[img_idx,:]
                 data_pp[ii,-(2+max_prev_choice):-2] = prev_choice[img_idx,:]
                 data_pp[ii,-2] = prev_outcome[img_idx]
 
@@ -769,15 +776,21 @@ def histBiasPP(data):
 
                 data_pp[ii,0] = date
                 data_pp[ii,1] = row['trial']
-                data_pp[ii,2] = row['right_prob_level']
-                data_pp[ii,3] = row['right_amnt_level']
+
+                if jj < 400:
+                    data_pp[ii,2] = 'early'
+                elif sess_data.shape[0] - jj < 400:
+                    data_pp[ii,2] = 'late'
+
+                data_pp[ii,3] = row['right_prob_level']
+                data_pp[ii,4] = row['right_amnt_level']
                 # data_pp[ii,4] = round(row['right_prob_level']*row['right_amnt_level'],2)
                 # data_pp[ii,5] = round(row['left_prob_level']*row['left_amnt_level'],2)
-                data_pp[ii,4] = row['left_prob_level']
-                data_pp[ii,5] = row['left_amnt_level']
-                data_pp[ii,6] = 1
-                data_pp[ii,7] = jj - lag1_trial[img_idx]
-                data_pp[ii, 8:8+max_lag] = outcome_hist[img_idx,:]
+                data_pp[ii,5] = row['left_prob_level']
+                data_pp[ii,6] = row['left_amnt_level']
+                data_pp[ii,7] = 1
+                data_pp[ii,8] = jj - lag1_trial[img_idx]
+                data_pp[ii, 9:9+max_lag] = outcome_hist[img_idx,:]
                 data_pp[ii,-(2+max_prev_choice):-2] = prev_choice[img_idx,:]
                 data_pp[ii,-2] = prev_outcome[img_idx]
 
@@ -815,4 +828,4 @@ def histBiasPP(data):
     # calculate EV
     # data_pp[:,5] = -np.diff(data_pp[:,4:6]).flatten()
 
-    return pd.DataFrame(data_pp, columns=col_labels)
+    return pd.DataFrame(data_pp, columns=col_labels).infer_objects()
