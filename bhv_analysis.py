@@ -51,6 +51,87 @@ def loadData(filt_sess=True):
                     
     return data.sort_values(by=['date', 'trial']).reset_index(drop=True)
 
+def fakeData(dates, images, ntrials=800):
+    img2prob_level = {1:1, 2:1, 3:1, 4:2, 5:2, 6:2, 7:3, 8:3, 9:3}
+    img2amnt_level = {1:1, 2:2, 3:3, 4:1, 5:2, 6:3, 7:1, 8:2, 9:3}
+    img2prob = {1:0.7, 2:0.7, 3:0.7, 4:0.4, 5:0.4, 6:0.4, 7:0.1, 8:0.1, 9:0.1}
+
+    fake_data = pd.DataFrame()
+    for date in dates:
+        trial = np.arange(ntrials)+1
+
+        trialtype = np.zeros(ntrials)
+
+        left_prob_level = np.full(ntrials, np.nan)
+        right_prob_level = np.full(ntrials, np.nan)
+        left_amnt_level = np.full(ntrials, np.nan)
+        right_amnt_level = np.full(ntrials, np.nan)
+
+        left_image = np.full(ntrials, np.nan)
+        right_image = np.full(ntrials, np.nan)
+
+        lever = np.zeros(ntrials)
+        if_reward = np.zeros(ntrials)
+
+        for ii in range(800):
+            a, b = np.random.choice(images, 2, replace=False)
+
+            if stats.bernoulli.rvs(0.67):
+                trialtype[ii] = 2
+
+                left_image[ii] = a
+                left_prob_level[ii] = img2prob_level[a]
+                left_amnt_level[ii] = img2amnt_level[a]
+
+                right_image[ii] = b
+                right_prob_level[ii] = img2prob_level[b]
+                right_amnt_level[ii] = img2amnt_level[b]
+
+                if stats.bernoulli.rvs(0.5):
+                    lever[ii] = -1
+                    if_reward[ii] = stats.bernoulli.rvs(img2prob[a])
+                else:
+                    lever[ii] = 1
+                    if_reward[ii] = stats.bernoulli.rvs(img2prob[b])
+
+            else:
+                trialtype[ii] = 1
+                if_reward[ii] = stats.bernoulli.rvs(img2prob[a])
+
+                if stats.bernoulli.rvs(0.5):
+                    left_image[ii] = a
+                    left_prob_level[ii] = img2prob_level[a]
+                    left_amnt_level[ii] = img2amnt_level[a]
+
+                    lever[ii] = -1
+
+                else:
+                    right_image[ii] = a
+                    right_prob_level[ii] = img2prob_level[a]
+                    right_amnt_level[ii] = img2amnt_level[a]
+
+                    lever[ii] = 1
+
+        fake_data = pd.concat((fake_data, pd.DataFrame({'date': date, 'sesstype': 'B', 'trial': trial, 'block': 1, \
+            'trialtype': trialtype, 'left_prob_level': left_prob_level, 'right_prob_level': right_prob_level, \
+            'left_amnt_level': left_amnt_level, 'right_amnt_level': right_amnt_level, 'left_image': left_image, \
+            'right_image': right_image, 'set': 1, 'lever': lever, 'if_reward': if_reward})), ignore_index=True)
+
+    fake_data['if_reward'] = fake_data['if_reward'].replace({0: np.nan})
+
+    return fake_data
+
+def mergeSim(data, sim, n=None):
+    data = data.drop(columns=['lever', 'if_reward'])
+
+    if not n is None:
+        sim = sim[sim['iter']==n]
+
+    new_lever = sim['sim_choice'].rename('lever')
+    new_reward = sim['reward'].mask(sim['reward'] > 0, 1).replace({0: np.nan}).rename('if_reward')
+
+    return pd.concat((data, new_lever, new_reward), axis=1)
+
 def isvalid(data, forced=False, sets='new', return_data=False):
     '''
     Sequence of Booleans denoting whether each trial in data is valid for analysis

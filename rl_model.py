@@ -214,7 +214,7 @@ class RescorlaWagnerModel(object):
 					self.params_fit.loc[date, param_labels] = list(opt.x)
 
 			elif min_type == 'global':
-				opt = basinhopping(cost_fn, params, minimizer_kwargs={'method':method, \
+				opt = basinhopping(cost_fn, params, niter_success=20, minimizer_kwargs={'method':method, \
 					'args':(param_labels, *self.data2numpy(block)), 'tol':1e-4, 'bounds':bounds, \
 					'constraints': cons})
 
@@ -268,7 +268,7 @@ class RescorlaWagnerModel(object):
 	def plotEVLearning(self, data, date, win_size=50, min_trials=10, win_step=10):
 		block_data = data[data['date']==date]
 		block_data = block_data[bhv.isvalid(block_data, sets='new')]
-		# block_sims = self.sim_results.loc[block_data.index]
+		block_sims = self.sim_results.loc[block_data.index]
 
 		left_amnt = block_data['left_amnt_level'].replace({1: 0.5, 2: 0.3, 3: 0.1})
 		left_prob = block_data['left_prob_level'].replace({1: 0.7, 2: 0.4, 3: 0.1})
@@ -277,15 +277,15 @@ class RescorlaWagnerModel(object):
 
 		optimal = (left_amnt*left_prob > right_amnt*right_prob).replace({True: -1.0, False: 1.0})
 
-		# sim_opt = block_sims.set_index('iter',append=True)['sim_choice'].unstack('iter')
-		# sim_opt = sim_opt.apply(lambda x: x == optimal, axis=0).reset_index(drop=True)
-		# sim_opt = sim_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
+		sim_opt = block_sims.set_index('iter',append=True)['sim_choice'].unstack('iter')
+		sim_opt = sim_opt.apply(lambda x: x == optimal, axis=0).reset_index(drop=True)
+		sim_opt = sim_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
 
 		real_opt = (block_data['lever'] == optimal).reset_index(drop=True)
 		real_opt = real_opt.rolling(window=win_size, min_periods=min_trials).mean()[win_step-1::win_step]
 
-		# all_opt = pd.concat((real_opt, sim_opt.stack().reset_index('iter',drop=True)), \
-		# 	axis=1).set_axis(['Monkey C', 'Model'], axis=1)
+		all_opt = pd.concat((real_opt, sim_opt.stack().reset_index('iter',drop=True)), \
+			axis=1).set_axis(['Monkey C', 'Model'], axis=1)
 
 
 		plt.figure()
@@ -293,7 +293,7 @@ class RescorlaWagnerModel(object):
 		plt.axhline(0.8, color=[0.75, 0.75, 0.75], ls='--')
 
 		sns.lineplot(data=real_opt, color='red', dashes=False)
-		# sns.lineplot(data=all_opt, palette={'Monkey C': 'grey', 'Model': 'red'}, dashes=False)
+		sns.lineplot(data=all_opt, palette={'Monkey C': 'grey', 'Model': 'red'}, dashes=False)
 
 		plt.title(date)
 		plt.xlabel('Free Trial')
@@ -664,8 +664,9 @@ class HysteresisRWModel(RescorlaWagnerModel):
 				q_r = -np.inf
 				xi_r = 0
 			else:
-				q_r = values[ii, int(img_r[ii]-1)]
-				xi_r = xi*last_action[idx_l]
+				idx_r = int(img_r[ii])-1
+				q_r = values[ii, idx_r]
+				xi_r = xi*last_action[idx_r]
 
 			p_l = softmax(q_l, q_r, beta, lr_bias-xi_l+xi_r)
 
@@ -800,6 +801,97 @@ class ChoiceKernelRWModel(RescorlaWagnerModel):
 				choice_kernel[chosen] = self.learningRule(choice_kernel[chosen], alpha_choice, choice_bias)
 				if not unchosen is None:
 					choice_kernel[unchosen] = self.learningRule(choice_kernel[unchosen], alpha_choice, 0)
+
+		return result, values
+
+class StickyRWModel(RescorlaWagnerModel):
+	def __init__(self, alpha_choice=0.01, choice_bias=0.1, **kwargs):
+		super().__init__(**kwargs)
+
+		self.params_init.update({'alpha_choice': alpha_choice, 'choice_bias': choice_bias})
+
+		self.bounds['alpha_choice'] = (0,1)
+		self.bounds['choice_bias'] = (0,None)
+
+		self.params_fit['alpha_choice'] = np.nan
+		self.params_fit['choice_bias'] = np.nan
+
+	def simSess(self, img_l, img_r, lever, reward, alpha=0.01, beta=-0.1, lr_bias=0.1, alpha_choice=0.01, choice_bias=0.1, mode='sim'):
+		'''
+		Estimates learned subjective values for each trial, given experimental data
+		
+		data: 		(DataFrame) experimental dataset
+		params:		(dict) free parameters
+		'''
+		values = np.ones((lever.size,9))*self.q0
+		choice_kernel = np.zeros(9)
+		if mode == 'sim':
+			result = np.zeros((lever.size,2)) # row: [simulated choice, outcome]
+		elif mode == 'est':
+			result = np.zeros((lever.size,1)) # log-likelihoods
+
+		amnt_map = np.array([0.5, 0.3, 0.1, 0.5, 0.3, 0.1, 0.5, 0.3, 0.1])
+		prob_map = np.array([0.7, 0.7, 0.7, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1])
+
+		err_ct = 0
+		for ii in range(lever.size):
+			# simulated probability of choosing left
+			if np.isnan(img_l[ii]):
+				idx_l = None
+				q_l = -np.inf
+				c_l = -np.inf
+			else:
+				idx_l = int(img_l[ii])-1
+				q_l = values[ii, idx_l]
+				c_l = choice_kernel[idx_l]
+
+			if np.isnan(img_r[ii]):
+				idx_r = None
+				q_r = -np.inf
+				c_r = -np.inf
+			else:
+				idx_r = int(img_r[ii])-1
+				q_r = values[ii, idx_r]
+				c_r = choice_kernel[idx_r]
+
+			p_l = softmax(q_l, q_r, beta, c_r-c_l+lr_bias)
+
+			if mode == 'sim':
+				# simulate choice and reward outcome
+				if stats.bernoulli.rvs(p_l):
+					choice = -1
+					chosen = idx_l # chosen image index
+				else:
+					choice = 1
+					chosen = idx_r
+
+				if lever[ii] == choice:
+					outcome = amnt_map[chosen] * reward[ii]
+				else:
+					outcome = amnt_map[chosen] * stats.bernoulli.rvs(prob_map[chosen])
+
+				result[ii,:] = [choice, outcome]
+
+			else:
+				# compute single-trial choice likelihood
+				if lever[ii] == -1:
+					result[ii] = np.log(p_l)
+					chosen = idx_l
+				else:
+					result[ii] = np.log(1-p_l)
+					chosen = idx_r
+				
+				outcome = amnt_map[chosen] * reward[ii]
+
+			# value update
+			if ii+1 < lever.size:
+				values[ii+1,:] = values[ii,:]
+				values[ii+1, chosen] = self.learningRule(values[ii+1, chosen], alpha, outcome)
+				for img in range(9):
+					if img == chosen:
+						choice_kernel[img] = self.learningRule(choice_kernel[img], alpha_choice, choice_bias)
+					else:
+						choice_kernel[img] = self.learningRule(choice_kernel[img], alpha_choice, 0)
 
 		return result, values
 
