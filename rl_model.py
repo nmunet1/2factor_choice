@@ -77,8 +77,11 @@ class RescorlaWagnerModel(object):
 			sim_results = sim_results.append(block_sim)
 
 		if merge_data:
-			sim_results = pd.concat((data, sim_results), axis=1, sort=False)
-			sim_results = sim_results.drop(columns='lever').rename(columns={'sim_choice': 'lever'})
+			if mode =='sim':
+				sim_results = bhv.mergeSim(data, sim_results)
+			else:
+				sim_results = pd.concat((data, sim_results), axis=1, sort=False)
+				sim_results = sim_results.drop(columns='lever').rename(columns={'sim_choice': 'lever'})
 
 		return sim_results
 
